@@ -34,11 +34,12 @@ export const readSettings = (kept: unknown): Settings => {
 // ---------------------------------------------------------------- what counts
 
 // The prompts the person typed: at the terminal, in the desktop app (an SDK
-// host), from the phone, or a mod sending their own words. Slash commands,
-// notifications, scheduled runs and other sessions' messages do not count.
-export const isTypedPrompt = (prompt: { originKind: string; asUser?: boolean; text: string }): boolean => {
+// host), from the phone, or a mod sending their own words. An image sent with
+// no words counts too. Slash commands, notifications, scheduled runs and other
+// sessions' messages do not.
+export const isTypedPrompt = (prompt: { originKind: string; asUser?: boolean; text: string; hasAttachments?: boolean }): boolean => {
   const text = prompt.text.trim()
-  if (text === '' || text.startsWith('/')) return false
+  if (text.startsWith('/') || (text === '' && prompt.hasAttachments !== true)) return false
   if (prompt.originKind === 'plugin') return prompt.asUser === true
 
   return prompt.originKind === 'composer' || prompt.originKind === 'bridge' || prompt.originKind === 'sdk'

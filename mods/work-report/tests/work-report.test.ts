@@ -206,11 +206,13 @@ describe('counting only typed prompts', () => {
     expect(isTypedPrompt({ originKind: 'sdk', text: 'draft the agenda' })).toBe(true)
     expect(isTypedPrompt({ originKind: 'bridge', text: 'draft the agenda' })).toBe(true)
     expect(isTypedPrompt({ originKind: 'plugin', asUser: true, text: 'the upgraded prompt' })).toBe(true)
+    expect(isTypedPrompt({ originKind: 'sdk', text: '', hasAttachments: true })).toBe(true)
   })
 
   test('slash commands, notifications, schedules, peers and empty text do not', () => {
     expect(isTypedPrompt({ originKind: 'composer', text: '/compact' })).toBe(false)
     expect(isTypedPrompt({ originKind: 'composer', text: '   ' })).toBe(false)
+    expect(isTypedPrompt({ originKind: 'composer', text: '/compact', hasAttachments: true })).toBe(false)
     expect(isTypedPrompt({ originKind: 'task-notification', text: 'done' })).toBe(false)
     expect(isTypedPrompt({ originKind: 'scheduled-trigger', text: 'run it' })).toBe(false)
     expect(isTypedPrompt({ originKind: 'peer', text: 'hello' })).toBe(false)
@@ -371,7 +373,7 @@ test('/report answers at once, opens the pane, and every command fails politely'
   expect((await report($, 'fortnight')).text).toContain('Try /report')
 })
 
-test('each tab draws its own title and chart, on terminal and desktop', async ($, on) => {
+test('each tab draws its own title and chart on the terminal', async ($, on) => {
   rig(on, {
     [`day:${TODAY}`]: day({ emails: 2, documents: 1 }, { 'Opus 5.5': 2, 'Sonnet 5.5': 1 }),
     'day:2026-10-10': day({ research: 1 }),
@@ -381,7 +383,7 @@ test('each tab draws its own title and chart, on terminal and desktop', async ($
   })
   await start($)
 
-  for (const surface of ['terminal', 'desktop'] as const) {
+  for (const surface of ['terminal'] as const) {
     const ui = await mount($, surface, 90)
 
     await ui.press({ key: 'tab-today' })
@@ -418,6 +420,59 @@ test('each tab draws its own title and chart, on terminal and desktop', async ($
     expect(chip?.props.backgroundColor).toBe('#F2C46D')
     await ui.unmount()
   }
+})
+
+test('the desktop gets real buttons and SVG drawings sized in pixels', async ($, on) => {
+  rig(on, {
+    [`day:${TODAY}`]: day({ emails: 2, documents: 1 }, { 'Opus 5.5': 2, 'Sonnet 5.5': 1 }),
+    'day:2026-02-11': day({ other: 4 }),
+  })
+  await start($)
+  const ui = await mount($, 'desktop', 50)
+  const svgs = async () => (await ui.findAll({ type: 'Svg' })).map(one => ({ source: String(one.props.source), alt: String(one.props.alt) }))
+  const buttons = async () => (await ui.findAll({ type: 'Button' })).map(one => ({ key: one.key, variant: one.props.variant }))
+
+  expect(await buttons()).toContainEqual({ key: 'tab-today', variant: 'primary' })
+  expect(await buttons()).toContainEqual({ key: 'tab-year', variant: 'secondary' })
+  let drawn = await svgs()
+  expect(drawn.map(one => one.alt)).toEqual([
+    'TODAY, Wed, Oct 14',
+    'est. hours saved 0.8 h, tasks done 3, est. value $42',
+    'Where the time went · est. hours: Emails 2 0.3 h, Documents 1 0.5 h, Images and video 0 0 h, Research 0 0 h, Other 0 0 h',
+    'Who did the work: Opus 5.5 2, Sonnet 5.5 1',
+    'The last 7 days: Th 0, Fr 0, Sa 0, Su 0, Mo 0, Tu 0, We 3',
+  ])
+  // 50 columns draw 650 pixels wide; the gold rule runs under the title only.
+  expect(drawn[0]!.source).toContain('width="650"')
+  expect(drawn[0]!.source).toMatch(/<line x1="0" y1="33" x2="[\d.]+" y2="33" stroke="#F2C46D"/)
+  expect(drawn[4]!.source).toMatch(/fill="#F2C46D"[^>]*>We<\/text>/)
+
+  await ui.press({ key: 'tab-year' })
+  expect(await buttons()).toContainEqual({ key: 'tab-year', variant: 'primary' })
+  drawn = await svgs()
+  expect(drawn[0]!.alt).toBe('2026 SO FAR, Jan 1 to Oct 14')
+  const chart = drawn.at(-1)!
+  expect(chart.alt).toBe('Month by month: J 0, F 4, M 0, A 0, M 0, J 0, J 0, A 0, S 0, O 3')
+  expect(chart.source).toMatch(/fill="#F2C46D"[^>]*>O<\/text>/)
+  // November and December are empty: twelve labels, ten bars or baselines.
+  expect((chart.source.match(/<rect /g) ?? []).length).toBe(10)
+  expect(await has(ui, /^Best month February, 4 tasks\. 2 active days\.$/)).toBe(true)
+
+  // Narrow: one tile per row and a number too wide for the big size set smaller.
+  await ui.unmount()
+  const narrow = await mount($, 'desktop', 14)
+  const tiles = (await narrow.findAll({ type: 'Svg' }))[1]!
+  expect(String(tiles.props.source)).toContain('height="312"')
+  await narrow.unmount()
+})
+
+test('an image sent with no words counts as a task', async ($, on) => {
+  const r = rig(on)
+  await start($)
+  await $.prompt.submit({ text: '', wait: false, origin: { kind: 'sdk' }, attachments: [{ type: 'image' }] } as never)
+  await $.turn.start({ text: '', turnId: 'img' })
+  await $.turn.complete({ answer: 'That is a pane.', durationMs: 1, isAborted: false, turnId: 'img', reason: 'answer' } as never)
+  expect(r.kept.get(`day:${TODAY}`)).toEqual({ kinds: { other: 1 }, models: { 'Sonnet 5.5': 1 } })
 })
 
 test('a clean empty state', async ($, on) => {

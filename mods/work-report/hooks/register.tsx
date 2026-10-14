@@ -34,6 +34,8 @@ import {
   wrap,
 } from './logic'
 import type { Bar, ToolUse, Totals } from './logic'
+import { barRowsSvg, chartSvg, headerSvg, kindRows, pixelsFor, tilesSvg } from './desktop'
+import type { Drawing } from './desktop'
 
 type D = EngineInterface
 
@@ -493,7 +495,12 @@ export const register: Register = on => {
     const origin = e.origin
     const isTyped =
       !isCommand &&
-      isTypedPrompt({ originKind: origin.kind, asUser: origin.kind === 'plugin' ? origin.asUser : undefined, text: e.text })
+      isTypedPrompt({
+        originKind: origin.kind,
+        asUser: origin.kind === 'plugin' ? origin.asUser : undefined,
+        text: e.text,
+        hasAttachments: (e.attachments?.length ?? 0) > 0,
+      })
     const entry = { text: e.text, turnId: e.turnId }
     if (isTyped) pending = [...pending, entry].slice(-20)
 
@@ -505,7 +512,7 @@ export const register: Register = on => {
 
   on('turn.start', ($, e, next) => {
     // The prompt the turn starts with, else the oldest typed while idle.
-    const match = pending.find(one => one.text === e.text) ?? (e.text === '' ? undefined : pending.find(one => one.turnId === undefined))
+    const match = pending.find(one => one.text === e.text) ?? pending.find(one => one.turnId === undefined)
     if (match !== undefined) {
       pending = pending.filter(one => one !== match)
       current = { turnId: e.turnId, uses: [] }
@@ -564,7 +571,7 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const table = $.ui.resolve(e)
     const kit: Kit = { Box: table.Box, Text: table.Text, Button: table.Button }
-    const { Box, Text } = kit
+    const { Box, Text, Button } = kit
     const width = Math.max(10, e.props.bodyColumns)
 
     const tab = await getTab($)
@@ -576,6 +583,66 @@ export const register: Register = on => {
     const totals = sumDays(days, daysOf(tab, today))
     const bars = barsOf(tab, days, today)
     const hasChart = bars.some(bar => bar.value > 0)
+
+    // The desktop and other app surfaces set text in a proportional font: they get the SVG drawing.
+    if (e.surface !== 'terminal' && 'Svg' in table) {
+      const { Svg } = table
+      const px = pixelsFor(e.props.bodyColumns)
+      const picture = (key: string, drawing: Drawing) => (
+        <Box key={key} marginTop={1}>
+          <Svg source={drawing.source} alt={drawing.alt} />
+        </Box>
+      )
+      const models = Object.entries(totals.models)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 6)
+        .map(([model, n], i) => ({ label: model, value: n, color: MODEL_COLORS[i % MODEL_COLORS.length]!, figures: [String(n)] }))
+      const isStreak = (tab === 'today' || tab === 'week') && streak(days, today) > 0
+      const first = shortDate(addDays(today, -29))
+
+      return (
+        <Box flexDirection="column">
+          <Box flexDirection="row" gap={1}>
+            {TABS.map(one => (
+              <Button
+                key={`tab-${one}`}
+                variant={one === tab ? 'primary' : 'secondary'}
+                onPress={act(async () => {
+                  await loadDays($)
+                  await $.state.set(TAB, one)
+                })}
+              >
+                {TAB_LABEL[one]}
+              </Button>
+            ))}
+          </Box>
+          {picture('header', headerSvg(px, name, dates))}
+          {totals.tasks === 0 ? (
+            <Box marginTop={1}>
+              <Text color={MUTED}>{emptyText(tab)}</Text>
+            </Box>
+          ) : (
+            <Box flexDirection="column">
+              {picture('tiles', tilesSvg(px, totals, settings))}
+              <Text color={MUTED}>{`Estimates: minutes saved per task at $${settings.rate} an hour.`}</Text>
+              {picture('kinds', barRowsSvg(px, 'Where the time went · est. hours', kindRows(totals, settings, KIND_COLOR)))}
+              {picture('models', barRowsSvg(px, 'Who did the work', models))}
+            </Box>
+          )}
+          {hasChart && picture('chart', chartSvg(px, tab, CHART_HEADING[tab], bars, first))}
+          {hasChart && (
+            <Box marginTop={1}>
+              <Text color={isStreak ? GREEN : TEXT}>{summaryOf(tab, days, today)}</Text>
+            </Box>
+          )}
+          <Box marginTop={1}>
+            <Button key="close" dimColor onPress={act(() => $.ui.close({ id: PANE }))}>
+              Close
+            </Button>
+          </Box>
+        </Box>
+      )
+    }
 
     return (
       <Box flexDirection="column" width={width}>
