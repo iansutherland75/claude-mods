@@ -50,7 +50,6 @@ export type ToolUse = { tool: string; paths: string[] }
 const MEDIA_FILE = /\.(png|jpe?g|gif|webp|heic|heif|tiff?|bmp|svg|psd|dng|cr[23]|nef|arw|raw|mp4|mov|m4v|webm|avi|mkv|prproj|aep)$/i
 const DOC_FILE = /\.(docx?|pptx?|xlsx?|csv|pdf|md|markdown|txt|rtf|odt|ods|odp|pages|key|numbers)$/i
 const WRITES = /^(Write|Edit|MultiEdit|NotebookEdit)$|create|write|save|export|upload/i
-const LOOKS = /^(Read|Grep|Glob|LS)$/
 
 const EMAIL_TOOL = /mail|inbox|outlook_.*draft/i
 const MEDIA_TOOL =
@@ -67,9 +66,12 @@ const docName = (tool: string) => tool.replace(/password|keyword/gi, '')
 // tool, the first that matches in this order wins: emails, images and video,
 // documents, research. A task that matched none is Other.
 export const kindOf = (uses: readonly ToolUse[]): Kind => {
+  // Image or video tools, saving an image or video file, or running a media
+  // command. Reading, listing or merely naming an image file is not image work.
   const media = (use: ToolUse) =>
     MEDIA_TOOL.test(use.tool) ||
-    (!LOOKS.test(use.tool) && use.paths.some(path => MEDIA_FILE.test(path) || (use.tool === 'Bash' && MEDIA_COMMAND.test(path))))
+    (WRITES.test(use.tool) && use.paths.some(path => MEDIA_FILE.test(path))) ||
+    (use.tool === 'Bash' && use.paths.some(path => MEDIA_COMMAND.test(path)))
   const documents = (use: ToolUse) =>
     DOC_TOOL.test(docName(use.tool)) || (WRITES.test(use.tool) && use.paths.some(path => DOC_FILE.test(path)))
 
@@ -427,4 +429,31 @@ export const tilesPerRow = (width: number, widest: number, count = 3): number =>
   }
 
   return 1
+}
+
+// ---------------------------------------------------------------- history
+
+// One finished request as scripts/history.py prints it.
+export type PastTask = { t: number; m: string; u: [string, string[]][] }
+
+export const readHistory = (text: string): PastTask[] => {
+  const raw: unknown = JSON.parse(text)
+  if (!Array.isArray(raw)) return []
+
+  return raw.filter(
+    (task): task is PastTask =>
+      typeof task === 'object' && task !== null && typeof task.t === 'number' && typeof task.m === 'string' && Array.isArray(task.u),
+  )
+}
+
+// The past requests counted into day records, sorted and named as live ones are.
+export const historyDays = (tasks: readonly PastTask[]): Record<string, DayRecord> => {
+  const days: Record<string, DayRecord> = {}
+  for (const task of tasks) {
+    const key = dayKey(new Date(task.t))
+    const uses = task.u.map(([tool, paths]) => ({ tool: String(tool), paths: Array.isArray(paths) ? paths.map(String) : [] }))
+    days[key] = addTask(days[key], kindOf(uses), modelName(task.m))
+  }
+
+  return days
 }

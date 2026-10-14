@@ -5,7 +5,7 @@ Ian's Claude Code mods. The repo is a plugin marketplace called `ian-mods`, and 
 | Mod | What it does |
 | --- | --- |
 | `prompt-upgrade` | `/better <prompt>` asks up to three quick questions, rewrites the prompt and shows the original and the rewrite side by side. Nothing runs until you press Run. `/better on` sends what you type to it first. |
-| `work-report` | `/report` opens a pane with the tasks Claude finished for you and an estimate of the hours saved and what that time is worth, for today, the last 7 days, the last 30 days and the year. `/report settings` shows and changes the minutes per task and the hourly rate. Counts are kept per machine. |
+| `work-report` | `/report` opens a pane with the tasks Claude finished for you and an estimate of the hours saved and what that time is worth, for today, the last 7 days, the last 30 days and the year. `/report settings` shows and changes the minutes per task and the hourly rate. `/report backfill` fills in past days from this machine's session history (needs `/usr/bin/python3`). Counts are kept per machine. |
 
 ## Set up a machine
 

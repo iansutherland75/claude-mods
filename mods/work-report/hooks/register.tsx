@@ -22,7 +22,9 @@ import {
   modelName,
   moneyText,
   pathsOf,
+  historyDays,
   readDay,
+  readHistory,
   readSettings,
   shortDate,
   streak,
@@ -116,6 +118,41 @@ const openReport = async ($: D) => {
   await loadDays($)
   const opened = await $.ui.open({ id: PANE, title: TITLE })
   if (!opened.isPlaced) $.ui.toast(NARROW)
+}
+
+const BACKFILL_FAILED = 'Work Report could not read your session history. Nothing was changed.'
+
+// Fills in past days from this machine's session transcripts. Read-only on the
+// transcripts; each day it finds replaces that day's record, so running it
+// again never counts a request twice.
+const backfill = async ($: D) => {
+  const home = await $.env.get('HOME')
+  const config = (await $.env.get('CLAUDE_CONFIG_DIR')) ?? (home === undefined ? undefined : `${home}/.claude`)
+  if (config === undefined) {
+    $.ui.toast(BACKFILL_FAILED)
+
+    return
+  }
+  const run = await $.process.run(['/usr/bin/python3', '-I', `${$.plugin.root}/scripts/history.py`, `${config}/projects`], {
+    timeoutMs: 600_000,
+  })
+  if (run.exitCode !== 0 || run.isStdoutTruncated) {
+    $.ui.toast(BACKFILL_FAILED)
+
+    return
+  }
+  const tasks = readHistory(run.stdout)
+  const days = historyDays(tasks)
+  for (const [key, day] of Object.entries(days)) await $.store.set(`day:${key}`, day)
+  await loadDays($)
+  const keys = Object.keys(days).sort()
+  const first = keys[0]
+  const last = keys[keys.length - 1]
+  $.ui.toast(
+    first === undefined || last === undefined
+      ? 'Work Report found no finished requests in your session history.'
+      : `Work Report filled in ${tasks.length} tasks from your session history, ${shortDate(first)} to ${shortDate(last)}.`,
+  )
 }
 
 const act = (work: () => Promise<unknown>) => () => {
@@ -439,8 +476,8 @@ export const register: Register = on => {
     try {
       await $.command.register({
         name: 'report',
-        description: 'Open the Work Report: tasks Claude finished and the time it saved. Also: week, month, year, settings',
-        argumentHint: '[today | week | month | year | settings]',
+        description: 'Open the Work Report: tasks Claude finished and the time it saved. Also: week, month, year, settings, backfill',
+        argumentHint: '[today | week | month | year | settings | backfill]',
       })
     } catch {
       // registration refused; counting still works
@@ -470,9 +507,19 @@ export const register: Register = on => {
         return { text: result.text }
       }
 
+      if (first === 'backfill') {
+        $.clock.after(0, () => {
+          void backfill($).catch(() => $.ui.toast(BACKFILL_FAILED))
+        })
+
+        return {
+          text: 'Reading your session history on this machine. The report fills in when it is done. Nothing leaves this computer.',
+        }
+      }
+
       const tab = TABS.find(one => one === first)
       if (first !== '' && tab === undefined) {
-        return { text: 'Try /report, /report week, /report month, /report year or /report settings.' }
+        return { text: 'Try /report, /report week, /report month, /report year, /report settings or /report backfill.' }
       }
       if (tab !== undefined) await $.state.set(TAB, tab)
       void openReport($).catch(() => undefined)

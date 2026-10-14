@@ -5,6 +5,8 @@ import type { On, PromptOrigin } from 'claude-code'
 import type { DayRecord } from '../types'
 import {
   DEFAULT_SETTINGS,
+  historyDays,
+  readHistory,
   addDays,
   applySetting,
   barsOf,
@@ -156,8 +158,11 @@ describe('sorting a task by its tools', () => {
     expect(kindOf([use('mcp__YouTube_Uploader__upload_video')])).toBe('media')
     expect(kindOf([use('Write', ['/tmp/thumb.png'])])).toBe('media')
     expect(kindOf([use('Bash', ['ffmpeg -i in.mov out.mp4'])])).toBe('media')
-    // Looking at a screenshot is not image work.
+    // Looking at, listing or screenshotting an image is not image work.
     expect(kindOf([use('Read', ['/tmp/screenshot.png'])])).toBe('other')
+    expect(kindOf([use('Bash', ['chrome --headless --screenshot=/tmp/peek.png'])])).toBe('other')
+    expect(kindOf([use('Bash', ['ls -la /tmp/peek.png'])])).toBe('other')
+    expect(kindOf([use('Edit', ['/tmp/clip.mov'])])).toBe('media')
   })
 
   test('document tools, or writing a document file', () => {
@@ -539,4 +544,62 @@ test('every row fits the pane at a narrow and a wide width', async ($, on) => {
     expect(await has(ui, /^\$19,563$/)).toBe(width === 64)
     await ui.unmount()
   }
+})
+
+// ---------------------------------------------------------------- backfill
+
+const PAST = [
+  { t: new Date(2026, 6, 14, 9, 0).getTime(), m: 'claude-fable-5', u: [['WebSearch', []]] },
+  { t: new Date(2026, 6, 14, 16, 30).getTime(), m: 'claude-fable-5', u: [['Write', ['/tmp/plan.docx']]] },
+  { t: new Date(2026, 9, 13, 11, 0).getTime(), m: 'claude-opus-5-5', u: [['mcp__0c87__outlook_send_mail', []], ['Bash', ['git status']]] },
+]
+
+test('reading past requests into day records', () => {
+  expect(readHistory(JSON.stringify([...PAST, { t: 'bad' }, null]))).toHaveLength(3)
+  expect(readHistory('{}')).toEqual([])
+  expect(historyDays(readHistory(JSON.stringify(PAST)))).toEqual({
+    '2026-07-14': { kinds: { research: 1, documents: 1 }, models: { 'Fable 5': 2 } },
+    '2026-10-13': { kinds: { emails: 1 }, models: { 'Opus 5.5': 1 } },
+  })
+})
+
+test('/report backfill answers at once, reads in the background, and running it twice counts nothing twice', async ($, on) => {
+  const r = rig(on, { 'day:2026-10-13': day({ other: 9 }), [`day:${TODAY}`]: day({ other: 2 }) })
+  const runs: string[][] = []
+  on('env.get', ($, e) => ({ value: e.name === 'HOME' ? '/Users/ian' : undefined }))
+  on('process.run', ($, e) => {
+    runs.push([...e.argv])
+
+    return { value: { exitCode: 0, stdout: JSON.stringify(PAST), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  await start($)
+
+  for (const round of [1, 2]) {
+    const answer = await report($, 'backfill')
+    expect(answer.text).toContain('Reading your session history')
+    await r.clock.advance(10)
+    await r.clock.settle()
+    expect(runs).toHaveLength(round)
+  }
+  expect(runs[0]?.slice(0, 2)).toEqual(['/usr/bin/python3', '-I'])
+  expect(runs[0]?.[2]).toMatch(/\/scripts\/history\.py$/)
+  expect(runs[0]?.[3]).toBe('/Users/ian/.claude/projects')
+
+  // Days the history covers are replaced; a day it does not cover is kept.
+  expect(r.kept.get('day:2026-07-14')).toEqual({ kinds: { research: 1, documents: 1 }, models: { 'Fable 5': 2 } })
+  expect(r.kept.get('day:2026-10-13')).toEqual({ kinds: { emails: 1 }, models: { 'Opus 5.5': 1 } })
+  expect(r.kept.get(`day:${TODAY}`)).toEqual(day({ other: 2 }))
+  expect(r.toasts.at(-1)).toBe('Work Report filled in 3 tasks from your session history, Jul 14 to Oct 13.')
+})
+
+test('a failed history read changes nothing and says so', async ($, on) => {
+  const r = rig(on, { 'day:2026-10-13': day({ other: 9 }) })
+  on('env.get', ($, e) => ({ value: e.name === 'HOME' ? '/Users/ian' : undefined }))
+  on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: 'no python', isStdoutTruncated: false, isStderrTruncated: false } }))
+  await start($)
+  await report($, 'backfill')
+  await r.clock.advance(10)
+  await r.clock.settle()
+  expect(r.kept.get('day:2026-10-13')).toEqual(day({ other: 9 }))
+  expect(r.toasts.at(-1)).toBe('Work Report could not read your session history. Nothing was changed.')
 })
