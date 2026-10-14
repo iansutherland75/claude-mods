@@ -70,6 +70,12 @@ const rig = (on: On, entries: Record<string, unknown> = {}): Rig => {
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', ($, e) => ({ text: e.answer }))
   on('tool.call', () => ({ result: 'ok' }) as never)
+  // The footer as the engine draws it: its mode labels.
+  on('ui.render', { component: 'SessionMode' }, ($, e) => {
+    const { Text } = $.ui.resolve(e)
+
+    return Text({ children: e.props.modes.join(' & ') })
+  })
 
   return r
 }

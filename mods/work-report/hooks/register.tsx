@@ -596,18 +596,18 @@ export const register: Register = on => {
     return next(e)
   }).catch(($, e, next) => next(e))
 
-  // The status bar button: the mode labels as the engine has them, then a
-  // quiet button with today's count that opens the report.
-  on('ui.render', { component: 'SessionMode' }, async ($, e) => {
+  // The status bar button, drawn after whatever else the footer holds (the
+  // engine's mode labels, other mods' buttons), so they sit side by side.
+  on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
+    const below = await next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
     const days = await getDays($)
     const count = tasksOn(days[await todayOf($)])
     const label = count === 0 ? 'Work report' : `Work report · ${count} today`
-    const modes = e.props.modes.join(' & ')
 
     return (
-      <Box flexDirection="row">
-        {modes !== '' && <Text dimColor>{`${modes}  `}</Text>}
+      <Box flexDirection="row" gap={2}>
+        {below}
         <Button key="open-work-report" plain onPress={act(() => openReport($))}>
           <Text dimColor>{label}</Text>
         </Button>

@@ -14,6 +14,11 @@
       "name": "work-report",
       "source": "./mods/work-report",
       "description": "Counts the tasks Claude finishes for you and estimates the hours saved and what that time is worth, by day, week, month and year."
+    },
+    {
+      "name": "ai-employee-kit",
+      "source": "./mods/ai-employee-kit",
+      "description": "Makes Claude Code calm for non-technical people. Clean View hides tool rows and shows a plain-English checklist of the job above the prompt."
     }
   ]
 }
