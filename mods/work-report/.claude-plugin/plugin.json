@@ -1,0 +1,9 @@
+{
+  "name": "work-report",
+  "version": "0.1.0",
+  "description": "Counts the tasks Claude finishes for you and estimates the hours saved and what that time is worth, by day, week, month and year.",
+  "author": {
+    "name": "Ian Sutherland"
+  },
+  "types": "./types/index.d.ts"
+}

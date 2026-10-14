@@ -9,6 +9,11 @@
       "name": "prompt-upgrade",
       "source": "./mods/prompt-upgrade",
       "description": "Turns a rough prompt into a clear one: up to three quick questions, a rewrite, and a side-by-side review before anything runs."
+    },
+    {
+      "name": "work-report",
+      "source": "./mods/work-report",
+      "description": "Counts the tasks Claude finishes for you and estimates the hours saved and what that time is worth, by day, week, month and year."
     }
   ]
 }
