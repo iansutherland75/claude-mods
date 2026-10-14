@@ -1,0 +1,14 @@
+{
+  "name": "ian-mods",
+  "description": "Ian's Claude Code mods.",
+  "owner": {
+    "name": "Ian Sutherland"
+  },
+  "plugins": [
+    {
+      "name": "prompt-upgrade",
+      "source": "./mods/prompt-upgrade",
+      "description": "Turns a rough prompt into a clear one: up to three quick questions, a rewrite, and a side-by-side review before anything runs."
+    }
+  ]
+}

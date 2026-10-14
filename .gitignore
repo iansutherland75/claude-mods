@@ -1,0 +1,3 @@
+# Type files Claude Code lays beside a mod at load time. Regenerated, never edited.
+mods/*/.claude-plugin/types/
+.DS_Store
