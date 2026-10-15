@@ -259,11 +259,16 @@ test('the desktop task list fills the band, and nothing is gated in a desktop se
   await call($, DESKTOP_LIST, { advance: true })
   expect(await said($)).toBe('Build the landing page · 0s. ✓ Gather the numbers Done. ▶ Draft the summary Working')
 
-  // An unreported step sweeps inside the image, with no redraws.
+  // A plain image (an interactive one is framed small), with the sweep drawn
+  // where the clock has it; the switch rides with the band.
   const desktop = await band($, 'desktop')
   const svg = (await desktop.findAll({ type: 'Svg' }))[0]
-  expect(String(svg?.props.source)).toContain('<animate attributeName="x"')
-  expect(svg?.props.isInteractive).toBe(true)
+  expect(String(svg?.props.source)).toContain('fill="url(#cv-sweep)"')
+  expect(String(svg?.props.source)).not.toContain('<animate')
+  expect(svg?.props.isInteractive).toBeUndefined()
+  await desktop.press({ key: 'clean-view-band-toggle' })
+  expect(r.toasts.at(-1)).toBe('Clean View is off. Every row is back. Type /simple on to bring it back.')
+  expect(await said($)).toBe('')
 })
 
 test('3. a permission prompt shows Needs you, and the next tool clears it', async ($, on) => {

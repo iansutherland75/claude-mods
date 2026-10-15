@@ -1,7 +1,8 @@
 // Clean View's band in the desktop app. The desktop sets text in a
 // proportional font and draws its own buttons, so cell-sized rows drift; the
-// band is one SVG sized in pixels instead. The sweep on a step that has not
-// reported yet is an SVG animation, so it moves with no redraws.
+// band is one SVG sized in pixels instead, drawn as a plain image: an
+// interactive (animated) SVG is framed at a fixed size and shrinks the text.
+// The sweep on a step that has not reported yet moves one notch per redraw.
 
 import type { CleanViewChecklist } from '../types'
 import { headerOf, rowsOf } from './clean-view-logic'
@@ -18,7 +19,7 @@ const INK = '#0D1117'
 
 const SANS = `-apple-system, BlinkMacSystemFont, 'SF Pro Text', Inter, 'Segoe UI', sans-serif`
 
-export type Band = { source: string; alt: string; isAnimated: boolean; height: number }
+export type Band = { source: string; alt: string; height: number }
 
 const esc = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 
@@ -60,10 +61,10 @@ const headerSvg = (list: CleanViewChecklist, width: number, now: number) => {
 }
 
 // One full row per step: its mark, its name, a meter and a label.
-export const bandSvg = (list: CleanViewChecklist, width: number, now: number): Band => {
+export const bandSvg = (list: CleanViewChecklist, width: number, now: number, frame = 0): Band => {
   const header = headerSvg(list, width, now)
   if (list.phase === 'done' && list.isCollapsed) {
-    return { source: svg(width, 28, header), alt: headerOf(list, now, 'you pressed Stop').text, isAnimated: false, height: 28 }
+    return { source: svg(width, 28, header), alt: headerOf(list, now, 'you pressed Stop').text, height: 28 }
   }
   const rows = rowsOf(list)
   const meterWidth = 120
@@ -71,7 +72,6 @@ export const bandSvg = (list: CleanViewChecklist, width: number, now: number): B
   const meterX = width - labelWidth - meterWidth - 12
   const nameX = 26
   const nameRoom = Math.max(40, meterX - nameX - 12)
-  let isAnimated = false
   let body = header + `<line x1="0" y1="34.5" x2="${width}" y2="34.5" stroke="${LINE}"/>`
   rows.forEach((row, i) => {
     const one = list.tasks[i]!
@@ -87,15 +87,15 @@ export const bandSvg = (list: CleanViewChecklist, width: number, now: number): B
       const filled = Math.round((one.percent / 100) * meterWidth)
       if (filled > 0) body += `<rect x="${meterX}" y="${y - 8}" width="${filled}" height="6" rx="3" fill="url(#cv-fill)"/>`
     } else if (one.status === 'active' && list.phase === 'working') {
-      isAnimated = true
-      body +=
-        `<svg x="${meterX}" y="${y - 8}" width="${meterWidth}" height="6"><rect x="-48" y="0" width="48" height="6" rx="3" fill="url(#cv-sweep)">` +
-        `<animate attributeName="x" from="-48" to="${meterWidth}" dur="1.6s" repeatCount="indefinite"/></rect></svg>`
+      const notches = 6
+      const sweep = 40
+      const x = meterX + ((frame % notches) / (notches - 1)) * (meterWidth - sweep)
+      body += `<rect x="${x.toFixed(1)}" y="${y - 8}" width="${sweep}" height="6" rx="3" fill="url(#cv-sweep)"/>`
     }
     body += `<text x="${width}" y="${y}" font-size="12" fill="${row.tone === 'active' ? TEXT : MUTED}" text-anchor="end">${esc(row.label)}</text>`
   })
   const height = 58 + (rows.length - 1) * 28 + 12
   const alt = [headerOf(list, now, 'you pressed Stop').text, ...rows.map(row => `${row.mark} ${row.name} ${row.label}`)].join('. ')
 
-  return { source: svg(width, height, body), alt, isAnimated, height }
+  return { source: svg(width, height, body), alt, height }
 }

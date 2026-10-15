@@ -144,8 +144,14 @@ const nameJob = async ($: D, jobId: number, text: string) => {
   await change($, list => (list.jobId === jobId ? { ...list, title: name } : list))
 }
 
+// The band's switch: Clean View off, and the band with it.
+const turnOff = async ($: D) => {
+  await setEnabled($, false)
+  toast($, false)
+}
+
 const toast = ($: D, isOn: boolean) =>
-  $.ui.toast(isOn ? 'Clean View is on. Tool rows are hidden.' : 'Clean View is off. Every row is back.')
+  $.ui.toast(isOn ? 'Clean View is on. Tool rows are hidden.' : 'Clean View is off. Every row is back. Type /simple on to bring it back.')
 
 export const registerCleanView = (on: On) => {
   // ---------------------------------------------------------------- start
@@ -444,10 +450,21 @@ export const registerCleanView = (on: On) => {
     if (e.surface !== 'terminal') {
       const table = $.ui.resolve(e)
       if (!('Svg' in table)) return next(e)
-      const { Svg } = table
-      const band = bandSvg(list, pixelsFor(e.props.bodyColumns), now)
+      const { Box, Button, Svg } = table
+      const band = bandSvg(list, pixelsFor(e.props.bodyColumns), now, frame)
 
-      return <Svg source={band.source} alt={band.alt} isInteractive={band.isAnimated ? true : undefined} />
+      // The desktop draws no plugin buttons in its footer, so the switch
+      // rides with the band there.
+      return (
+        <Box flexDirection="column">
+          <Svg source={band.source} alt={band.alt} />
+          <Box flexDirection="row">
+            <Button key="clean-view-band-toggle" dimColor onPress={() => void turnOff($).catch(() => undefined)}>
+              Clean View: On
+            </Button>
+          </Box>
+        </Box>
+      )
     }
 
     const { Box, Text } = $.ui.resolve(e)
