@@ -129,6 +129,7 @@ describe('plain names', () => {
   test("Haiku's job name is read plainly, and nonsense is ignored", () => {
     expect(readJobName('"Build the pricing page."')).toBe('Build the pricing page')
     expect(readJobName('Sure')).toBeNull()
+    expect(readJobName('Check nnpbc.com server status.')).toBe('Check nnpbc.com server status')
   })
 })
 

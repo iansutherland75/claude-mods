@@ -55,7 +55,13 @@ export const namePrompt = (text: string): string => `The request:\n<request>\n${
 
 // Haiku's reply as a job name, or null when it is not usable.
 export const readJobName = (reply: string): string | null => {
-  const line = (reply.split('\n').find(one => one.trim() !== '') ?? '').replace(/["'“”‘’*_.]/g, '').trim()
+  // Quotes and markdown go; a dot stays inside a word ("nnpbc.com") and only
+  // goes at the end.
+  const line = (reply.split('\n').find(one => one.trim() !== '') ?? '')
+    .replace(/["“”‘’*_]/g, '')
+    .replace(/^'+|'+$/g, '')
+    .trim()
+    .replace(/[.!?]+$/, '')
   const words = line.split(/\s+/).filter(Boolean)
   if (words.length < 2 || words.length > 8) return null
 
