@@ -6,7 +6,15 @@ import type { DayRecord } from '../types'
 import {
   DEFAULT_SETTINGS,
   historyDays,
+  kindMinutes,
+  minutesSaved,
+  parseAdd,
+  projectOf,
+  projectOfTask,
+  projectRows,
   readHistory,
+  taskLines,
+  writtenLines,
   addDays,
   applySetting,
   barsOf,
@@ -54,6 +62,7 @@ const rig = (on: On, entries: Record<string, unknown> = {}): Rig => {
   on('store.keys', () => ({ value: [...r.kept.keys()] }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.model', () => ({ value: 'claude-sonnet-5-5' }))
+  on('session.cwd', () => ({ value: '/Volumes/Ext1/dev/qbr-builder' }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('ui.open', ($, e) => {
     r.opened.push(e.id)
@@ -190,7 +199,8 @@ describe('sorting a task by its tools', () => {
 
   test('everything else is Other, and the order decides a mix', () => {
     expect(kindOf([])).toBe('other')
-    expect(kindOf([use('Bash', ['git status']), use('Edit', ['/tmp/app.ts']), use('ToolSearch')])).toBe('other')
+    expect(kindOf([use('Bash', ['git status']), use('Read', ['/tmp/app.ts']), use('ToolSearch')])).toBe('other')
+    expect(kindOf([use('Bash', ['git status']), use('Edit', ['/tmp/app.ts']), use('ToolSearch')])).toBe('building')
     expect(kindOf([use('WebSearch'), use('Write', ['/tmp/report.docx'])])).toBe('documents')
     expect(kindOf([use('Write', ['/tmp/report.docx']), use('Write', ['/tmp/cover.jpg'])])).toBe('media')
   })
@@ -239,6 +249,7 @@ describe('counting only typed prompts', () => {
     expect(r.kept.get(`day:${TODAY}`)).toEqual({
       kinds: { emails: 1, research: 1 },
       models: { 'Opus 5.5': 1, 'Sonnet 5.5': 1 },
+      projects: { 'qbr-builder': { kinds: { emails: 1, research: 1 } } },
     })
   })
 
@@ -260,7 +271,11 @@ describe('counting only typed prompts', () => {
     await $.tool.call({ tool: 'Write', file_path: '/tmp/notes.md', content: 'x', tool_use_id: 'w2' } as never)
     await $.turn.complete({ answer: 'Done', durationMs: 1, isAborted: false, turnId, reason: 'answer' } as never)
 
-    expect(r.kept.get(`day:${TODAY}`)).toEqual({ kinds: { documents: 1 }, models: { 'Sonnet 5.5': 1 } })
+    expect(r.kept.get(`day:${TODAY}`)).toEqual({
+      kinds: { documents: 1 },
+      models: { 'Sonnet 5.5': 1 },
+      projects: { 'qbr-builder': { kinds: { documents: 1 } } },
+    })
   })
 })
 
@@ -287,7 +302,7 @@ describe('days', () => {
     }
     const week = sumDays(days, daysOf('week', TODAY))
     expect(week.tasks).toBe(8)
-    expect(week.kinds).toEqual({ emails: 3, documents: 4, media: 0, research: 0, other: 1 })
+    expect(week.kinds).toEqual({ emails: 3, documents: 4, building: 0, media: 0, research: 0, other: 1 })
     expect(week.models).toEqual({ 'Opus 5.5': 5, 'Sonnet 5.5': 3 })
     expect(sumDays(days, daysOf('year', TODAY)).tasks).toBe(17)
   })
@@ -359,7 +374,7 @@ describe('settings', () => {
     await start($)
     expect((await report($, 'settings rate 75')).text).toContain('$75')
     expect((await report($, 'settings emails 15')).text).toContain('15 minutes')
-    expect(r.kept.get('settings')).toEqual({ rate: 75, minutes: { ...DEFAULT_SETTINGS.minutes, emails: 15 } })
+    expect(r.kept.get('settings')).toEqual({ rate: 75, minutes: { ...DEFAULT_SETTINGS.minutes, emails: 15 }, buildRate: 25 })
     expect((await report($, 'settings')).text).toContain('Hourly rate: $75')
 
     // Six emails at fifteen minutes is 1.5 hours; at $75 that is $113.
@@ -449,7 +464,7 @@ test('the desktop gets real buttons and SVG drawings sized in pixels', async ($,
   expect(drawn.map(one => one.alt)).toEqual([
     'TODAY, Wed, Oct 14',
     'est. hours saved 0.8 h, tasks done 3, est. value $42',
-    'Where the time went · est. hours: Emails 2 0.3 h, Documents 1 0.5 h, Images and video 0 0 h, Research 0 0 h, Other 0 0 h',
+    'Where the time went · est. hours: Emails 2 0.3 h, Documents 1 0.5 h, Building software 0 0 h, Images and video 0 0 h, Research 0 0 h, Other 0 0 h',
     'Who did the work: Opus 5.5 2, Sonnet 5.5 1',
     'The last 7 days: Th 0, Fr 0, Sa 0, Su 0, Mo 0, Tu 0, We 3',
   ])
@@ -483,7 +498,11 @@ test('an image sent with no words counts as a task', async ($, on) => {
   await $.prompt.submit({ text: '', wait: false, origin: { kind: 'sdk' }, attachments: [{ type: 'image' }] } as never)
   await $.turn.start({ text: '', turnId: 'img' })
   await $.turn.complete({ answer: 'That is a pane.', durationMs: 1, isAborted: false, turnId: 'img', reason: 'answer' } as never)
-  expect(r.kept.get(`day:${TODAY}`)).toEqual({ kinds: { other: 1 }, models: { 'Sonnet 5.5': 1 } })
+  expect(r.kept.get(`day:${TODAY}`)).toEqual({
+    kinds: { other: 1 },
+    models: { 'Sonnet 5.5': 1 },
+    projects: { 'qbr-builder': { kinds: { other: 1 } } },
+  })
 })
 
 test('a clean empty state', async ($, on) => {
@@ -608,4 +627,123 @@ test('a failed history read changes nothing and says so', async ($, on) => {
   await r.clock.settle()
   expect(r.kept.get('day:2026-10-13')).toEqual(day({ other: 9 }))
   expect(r.toasts.at(-1)).toBe('Work Report could not read your session history. Nothing was changed.')
+})
+
+// ---------------------------------------------------------------- building software
+
+describe('building software', () => {
+  const use = (tool: string, paths: string[] = [], lines = 0) => ({ tool, paths, lines })
+
+  test('writing code or running a build is Building; Remotion stays video', () => {
+    expect(kindOf([use('Write', ['/Volumes/Ext1/dev/billing-gap/src/index.ts'], 200)])).toBe('building')
+    expect(kindOf([use('Bash', ['npx wrangler deploy'])])).toBe('building')
+    expect(kindOf([use('Bash', ['npm test'])])).toBe('building')
+    expect(kindOf([use('Write', ['/Volumes/Ext1/remotion/src/Scene.tsx'], 300)])).toBe('media')
+    expect(kindOf([use('Write', ['/tmp/notes.md'], 40)])).toBe('documents')
+    expect(kindOf([use('Write', ['/tmp/a.ts'], 10), use('mcp__x__outlook_send_mail')])).toBe('emails')
+  })
+
+  test('lines written: a rewritten file counts once, edits add up, other files count nothing', () => {
+    expect(writtenLines({ content: 'a\nb\nc' })).toBe(3)
+    expect(writtenLines({ new_string: 'x\ny' })).toBe(2)
+    expect(writtenLines({ edits: [{ new_string: 'a' }, { new_string: 'b\nc' }] })).toBe(3)
+    expect(
+      taskLines([
+        use('Write', ['/r/app.ts'], 100),
+        use('Write', ['/r/app.ts'], 120),
+        use('Edit', ['/r/util.py'], 5),
+        use('Edit', ['/r/util.py'], 7),
+        use('Write', ['/r/README.md'], 400),
+        use('Write', ['/Volumes/Ext1/remotion/a.tsx'], 900),
+        use('Bash', ['npm test']),
+      ]),
+    ).toBe(132)
+  })
+
+  test('the estimate: lines over 25 an hour, never under 30 minutes a task', () => {
+    const bucket = { kinds: { emails: 0, documents: 0, building: 3, media: 0, research: 0, other: 2 }, buildLines: [100, 10], manualMinutes: 0 }
+    // 100 lines = 240 min; 10 lines = 24 min, floored to 30; one task with no lines kept = 30.
+    expect(kindMinutes(bucket, 'building', DEFAULT_SETTINGS)).toBe(300)
+    expect(minutesSaved({ ...bucket, manualMinutes: 600 }, DEFAULT_SETTINGS)).toBe(300 + 20 + 600)
+    expect(kindMinutes(bucket, 'building', { ...DEFAULT_SETTINGS, buildRate: 50 })).toBe(120 + 30 + 30)
+  })
+
+  test('projects by folder, and by the files a task wrote', () => {
+    const home = '/Users/ian'
+    expect(projectOf('/Volumes/Ext1/dev/qbr-builder/app', home)).toBe('qbr-builder')
+    expect(projectOf('/Volumes/4TB_Disk/dev/qbr-builder', home)).toBe('qbr-builder')
+    expect(projectOf('/Volumes/Ext1/dev', home)).toBe('dev workspace')
+    expect(projectOf('/Volumes/Ext1/3 - remotion/Scene', home)).toBe('3 - remotion')
+    expect(projectOf('/Users/ian/claude-mods/mods/x', home)).toBe('claude-mods')
+    expect(projectOfTask('/Volumes/Ext1/dev', [use('Write', ['/Volumes/Ext1/dev/onboarding-portal/src/a.ts'], 5)], home)).toBe('onboarding-portal')
+    expect(projectOfTask('/Volumes/Ext1/dev', [use('Write', ['/Users/ian/.claude/dev-mods/s1/kit/hooks/a.tsx'], 5)], home)).toBe('claude-mods')
+    expect(projectOfTask('/Volumes/Ext1/dev/nnpbc project', [use('Write', ['/private/tmp/x/scratch.sh'], 5)], home)).toBe('nnpbc project')
+  })
+
+  test('/report add takes a project, hours and an optional date', () => {
+    expect(parseAdd('"QBR builder" 160 2026-05-01', TODAY).entry).toEqual({ project: 'QBR builder', hours: 160, date: '2026-05-01' })
+    expect(parseAdd('sentiment engine 80h', TODAY).entry).toEqual({ project: 'sentiment engine', hours: 80, date: TODAY })
+    expect(parseAdd('"QBR builder" lots', TODAY).text).toContain('Try /report add')
+    expect(parseAdd('"QBR builder" 10 2026-02-30', TODAY).text).toContain('year-month-day')
+    expect(parseAdd('"QBR builder" 10 2027-01-01', TODAY).text).toContain('future')
+  })
+
+  test('by project: the top ones by name, the rest together, hours added by hand included', () => {
+    const days = {
+      [TODAY]: {
+        kinds: { building: 2, other: 1 },
+        models: { 'Opus 5.5': 3 },
+        buildLines: [250, 50],
+        projects: { 'billing-gap': { kinds: { building: 1 }, buildLines: [250] }, 'nnpbc project': { kinds: { building: 1, other: 1 }, buildLines: [50] } },
+      },
+    }
+    const manual = [{ id: 'm1', project: 'QBR builder', hours: 160, date: '2026-05-01' }]
+    const totals = sumDays(days, daysOf('year', TODAY), manual)
+    expect(totals.tasks).toBe(3)
+    expect(totals.manualMinutes).toBe(9600)
+    expect(projectRows(totals, DEFAULT_SETTINGS)).toEqual([
+      { name: 'QBR builder', minutes: 9600, tasks: 0 },
+      { name: 'billing-gap', minutes: 600, tasks: 1 },
+      { name: 'nnpbc project', minutes: 130, tasks: 2 },
+    ])
+    expect(sumDays(days, daysOf('month', TODAY), manual).manualMinutes).toBe(0)
+  })
+})
+
+test('a building request is sized by its code and filed under its project', async ($, on) => {
+  const r = rig(on)
+  await start($)
+  await task($, 'add the invoice export', [
+    { tool: 'Write', file_path: '/Volumes/Ext1/dev/billing-gap/src/export.ts', content: Array(50).fill('x').join('\n') },
+    { tool: 'Bash', command: 'npm test' },
+  ])
+  expect(r.kept.get(`day:${TODAY}`)).toEqual({
+    kinds: { building: 1 },
+    models: { 'Sonnet 5.5': 1 },
+    buildLines: [50],
+    projects: { 'billing-gap': { kinds: { building: 1 }, buildLines: [50] } },
+  })
+})
+
+test('/report add, list and remove, and the pane shows the hours by project', async ($, on) => {
+  const r = rig(on)
+  await start($)
+  expect((await report($, 'add "QBR builder" 160 2026-05-01')).text).toBe(
+    'Added 160 estimated hours for QBR builder on 2026-05-01. /report list shows everything you have added.',
+  )
+  expect((await report($, 'add sentiment engine 80')).text).toContain('sentiment engine on 2026-10-14')
+  expect((await report($, 'list')).text).toContain('1. QBR builder: 160 h on 2026-05-01')
+  expect(r.kept.get('manual')).toHaveLength(2)
+
+  // Hours added by hand count toward the year and by project, never as tasks.
+  const ui = await mount($, 'desktop', 50)
+  await ui.press({ key: 'tab-year' })
+  const alts = (await ui.findAll({ type: 'Svg' })).map(one => String(one.props.alt))
+  expect(alts).toContain('By project · est. hours: QBR builder 0 160 h, sentiment engine 0 80 h')
+  expect(alts.find(alt => alt.startsWith('est. hours saved'))).toBe('est. hours saved 240 h, tasks done 0, est. value $12,000')
+  await ui.unmount()
+
+  expect((await report($, 'remove 1')).text).toBe('Removed 160 hours for QBR builder on 2026-05-01.')
+  expect((await report($, 'remove 9')).text).toContain('from 1 to 1')
+  expect(r.kept.get('manual')).toHaveLength(1)
 })

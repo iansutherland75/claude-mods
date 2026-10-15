@@ -3,7 +3,7 @@
 // the chart are drawn here as SVG instead, sized in pixels.
 
 import type { Kind, Settings, Tab } from '../types'
-import { KINDS, KIND_LABEL, hoursText, minutesSaved, moneyText } from './logic'
+import { KINDS, KIND_LABEL, hoursText, kindMinutes, minutesSaved, moneyText, projectRows } from './logic'
 import type { Bar, Totals } from './logic'
 
 const GOLD = '#F2C46D'
@@ -69,11 +69,11 @@ export const tilesAcross = (width: number): number => {
 // Three rounded tiles with big numerals; fewer side by side as it narrows.
 // A number too wide for the big size is set smaller, still bold.
 export const tilesSvg = (width: number, totals: Totals, settings: Settings): Drawing => {
-  const minutes = minutesSaved(totals.kinds, settings)
+  const minutes = minutesSaved(totals, settings)
   const tiles = [
     { big: hoursText(minutes), plain: `${hoursText(minutes)} h`, label: 'EST. HOURS SAVED', color: GOLD },
-    { big: String(totals.tasks), plain: totals.tasks.toLocaleString('en-US'), label: 'TASKS DONE', color: TEXT },
-    { big: moneyText(minutes, settings.rate), plain: moneyText(minutes, settings.rate, true), label: 'EST. VALUE', color: GREEN },
+    { big: totals.tasks.toLocaleString('en-US'), plain: totals.tasks.toLocaleString('en-US'), label: 'TASKS DONE', color: TEXT },
+    { big: moneyText(minutes, settings.rate, true), plain: moneyText(minutes, settings.rate, true), label: 'EST. VALUE', color: GREEN },
   ]
   const across = tilesAcross(width)
   const tileWidth = Math.floor((width - (across - 1) * TILE_GAP) / across)
@@ -131,9 +131,19 @@ export const barRowsSvg = (width: number, title: string, rows: BarRow[]): Drawin
 export const kindRows = (totals: Totals, settings: Settings, colors: Record<Kind, string>): BarRow[] =>
   KINDS.map(kind => ({
     label: KIND_LABEL[kind],
-    value: totals.kinds[kind],
+    value: kindMinutes(totals, kind, settings),
     color: colors[kind],
-    figures: [String(totals.kinds[kind]), `${hoursText(totals.kinds[kind] * settings.minutes[kind])} h`],
+    figures: [String(totals.kinds[kind]), `${hoursText(kindMinutes(totals, kind, settings))} h`],
+  }))
+
+// One row per project: its tasks and estimated hours, hours added by hand
+// included.
+export const projectBarRows = (totals: Totals, settings: Settings, colors: readonly string[]): BarRow[] =>
+  projectRows(totals, settings).map((row, i) => ({
+    label: row.name,
+    value: row.minutes,
+    color: colors[i % colors.length]!,
+    figures: [String(row.tasks), `${hoursText(row.minutes)} h`],
   }))
 
 // The chart: a heading, bars on a plot 64 pixels tall, labels under them.

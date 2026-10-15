@@ -1,6 +1,6 @@
 import type { Elements, EngineInterface, Register } from 'claude-code'
 
-import type { DayRecord, Kind, Settings, Tab } from '../types'
+import type { DayRecord, Kind, ManualEntry, Settings, Tab } from '../types'
 import {
   DEFAULT_SETTINGS,
   KINDS,
@@ -17,8 +17,16 @@ import {
   emptyText,
   hoursText,
   isTypedPrompt,
+  kindMinutes,
   kindOf,
+  manualListText,
   minutesSaved,
+  parseAdd,
+  projectOfTask,
+  projectRows,
+  readManual,
+  taskLines,
+  writtenLines,
   modelName,
   moneyText,
   pathsOf,
@@ -36,7 +44,7 @@ import {
   wrap,
 } from './logic'
 import type { Bar, ToolUse, Totals } from './logic'
-import { barRowsSvg, chartSvg, headerSvg, kindRows, pixelsFor, tilesSvg } from './desktop'
+import { barRowsSvg, chartSvg, headerSvg, kindRows, pixelsFor, projectBarRows, tilesSvg } from './desktop'
 import type { Drawing } from './desktop'
 
 type D = EngineInterface
@@ -56,6 +64,7 @@ const INK = '#0D1117'
 const KIND_COLOR: Record<Kind, string> = {
   emails: '#79C0FF',
   documents: GOLD,
+  building: '#F0876A',
   media: '#D2A8FF',
   research: '#56D4DD',
   other: MUTED,
@@ -70,11 +79,23 @@ const NARROW = 'Work Report needs a wider window. Widen it and run /report again
 const DAYS = { plugin: 'work-report', key: 'days' } as const
 const SETTINGS = { plugin: 'work-report', key: 'settings' } as const
 const TAB = { plugin: 'work-report', key: 'tab' } as const
+const MANUAL = { plugin: 'work-report', key: 'manual' } as const
 
 // Reads while drawing subscribe the drawing; writes come only from events.
 const getDays = async ($: D): Promise<Record<string, DayRecord>> => (await $.state.get(DAYS)).value ?? {}
 const getSettings = async ($: D): Promise<Settings> => readSettings((await $.state.get(SETTINGS)).value)
 const getTab = async ($: D): Promise<Tab> => (await $.state.get(TAB)).value ?? 'today'
+const getManual = async ($: D): Promise<ManualEntry[]> => readManual((await $.state.get(MANUAL)).value)
+
+// Hours added by hand: kept in the store, mirrored into state for drawing.
+const loadManual = async ($: D) => {
+  await $.state.set(MANUAL, readManual(await $.store.get('manual')))
+}
+
+const saveManual = async ($: D, list: ManualEntry[]) => {
+  await $.store.set('manual', list)
+  await $.state.set(MANUAL, list)
+}
 
 const todayOf = async ($: D) => dayKey(new Date(await $.clock.now()))
 
@@ -107,9 +128,9 @@ const loadSettings = async ($: D) => {
   await $.state.set(SETTINGS, readSettings(await $.store.get('settings')))
 }
 
-const record = async ($: D, kind: Kind, model: string) => {
+const record = async ($: D, kind: Kind, model: string, project: string, lines: number) => {
   const today = await todayOf($)
-  const day = addTask(readDay(await $.store.get(`day:${today}`)), kind, model)
+  const day = addTask(readDay(await $.store.get(`day:${today}`)), kind, model, project, lines)
   await $.store.set(`day:${today}`, day)
   await changeDays($, days => ({ ...days, [today]: day }))
 }
@@ -142,7 +163,7 @@ const backfill = async ($: D) => {
     return
   }
   const tasks = readHistory(run.stdout)
-  const days = historyDays(tasks)
+  const days = historyDays(tasks, home ?? '')
   for (const [key, day] of Object.entries(days)) await $.store.set(`day:${key}`, day)
   await loadDays($)
   const keys = Object.keys(days).sort()
@@ -272,7 +293,7 @@ const TILE_MIN = 20
 
 const drawTiles = (kit: Kit, width: number, totals: Totals, settings: Settings) => {
   const { Box, Text } = kit
-  const minutes = minutesSaved(totals.kinds, settings)
+  const minutes = minutesSaved(totals, settings)
   const tiles = [
     { key: 'hours', value: hoursText(minutes), plain: `${hoursText(minutes)} h`, label: 'EST. HOURS SAVED', color: GOLD },
     { key: 'tasks', value: String(totals.tasks), plain: totals.tasks.toLocaleString('en-US'), label: 'TASKS DONE', color: TEXT },
@@ -353,8 +374,8 @@ const drawBarRow = (kit: Kit, width: number, row: { key: string; label: string; 
 
 const drawKinds = (kit: Kit, width: number, totals: Totals, settings: Settings) => {
   const { Box } = kit
-  const max = Math.max(...KINDS.map(kind => totals.kinds[kind]))
-  const hourTexts = KINDS.map(kind => `${hoursText(totals.kinds[kind] * settings.minutes[kind])}h`)
+  const max = Math.max(...KINDS.map(kind => kindMinutes(totals, kind, settings)))
+  const hourTexts = KINDS.map(kind => `${hoursText(kindMinutes(totals, kind, settings))}h`)
   const hourWidth = Math.max(...hourTexts.map(text => text.length))
   const countWidth = Math.max(...KINDS.map(kind => String(totals.kinds[kind]).length))
 
@@ -365,7 +386,7 @@ const drawKinds = (kit: Kit, width: number, totals: Totals, settings: Settings) 
         drawBarRow(kit, width, {
           key: `kind-${kind}`,
           label: KIND_LABEL[kind],
-          value: totals.kinds[kind],
+          value: kindMinutes(totals, kind, settings),
           max,
           color: KIND_COLOR[kind],
           figures: `${String(totals.kinds[kind]).padStart(countWidth)}  ${hourTexts[i]!.padStart(hourWidth)}`,
@@ -394,6 +415,32 @@ const drawModels = (kit: Kit, width: number, totals: Totals) => {
           max,
           color: MODEL_COLORS[i % MODEL_COLORS.length]!,
           figures: String(n).padStart(countWidth),
+        }),
+      )}
+    </Box>
+  )
+}
+
+const drawProjects = (kit: Kit, width: number, totals: Totals, settings: Settings) => {
+  const { Box } = kit
+  const rows = projectRows(totals, settings)
+  if (rows.length === 0) return null
+  const max = Math.max(...rows.map(row => row.minutes))
+  const hourTexts = rows.map(row => `${hoursText(row.minutes)}h`)
+  const hourWidth = Math.max(...hourTexts.map(text => text.length))
+  const countWidth = Math.max(...rows.map(row => String(row.tasks).length))
+
+  return (
+    <Box flexDirection="column" width={width}>
+      {drawSection(kit, width, 'By project · est. hours')}
+      {rows.map((row, i) =>
+        drawBarRow(kit, width, {
+          key: `project-${i}`,
+          label: row.name,
+          value: row.minutes,
+          max,
+          color: MODEL_COLORS[i % MODEL_COLORS.length]!,
+          figures: `${String(row.tasks).padStart(countWidth)}  ${hourTexts[i]!.padStart(hourWidth)}`,
         }),
       )}
     </Box>
@@ -469,21 +516,24 @@ const drawChart = (kit: Kit, width: number, tab: Tab, all: Bar[], today: string)
 export const register: Register = on => {
   // Typed prompts waiting for their turn, and the turn being counted.
   let pending: { text: string; turnId?: string }[] = []
-  let current: { turnId: string; uses: ToolUse[] } | null = null
+  let current: { turnId: string; uses: ToolUse[]; cwd: string } | null = null
   let lastCommandAt = -Infinity
+  let home = ''
 
   on('session.start', async ($, e, next) => {
     try {
       await $.command.register({
         name: 'report',
-        description: 'Open the Work Report: tasks Claude finished and the time it saved. Also: week, month, year, settings, backfill',
-        argumentHint: '[today | week | month | year | settings | backfill]',
+        description: 'Open the Work Report: tasks Claude finished and the time it saved. Also: week, month, year, settings, backfill, add, list, remove',
+        argumentHint: '[today | week | month | year | settings | backfill | add | list | remove]',
       })
     } catch {
       // registration refused; counting still works
     }
     try {
+      home = (await $.env.get('HOME').catch(() => undefined)) ?? ''
       await loadSettings($)
+      await loadManual($)
       await loadDays($)
     } catch {
       // nothing kept yet
@@ -507,6 +557,30 @@ export const register: Register = on => {
         return { text: result.text }
       }
 
+      if (first === 'add') {
+        const parsed = parseAdd(e.args.trim().slice(3), await todayOf($))
+        if (parsed.entry === undefined) return { text: parsed.text ?? FAILED }
+        const list = await getManual($)
+        const entry: ManualEntry = { ...parsed.entry, id: `${await $.clock.now()}-${list.length}` }
+        await saveManual($, [...list, entry])
+
+        return { text: `Added ${entry.hours} estimated hours for ${entry.project} on ${entry.date}. /report list shows everything you have added.` }
+      }
+
+      if (first === 'list') return { text: manualListText(await getManual($)) }
+
+      if (first === 'remove') {
+        const list = await getManual($)
+        const n = Number(words[1])
+        if (!Number.isInteger(n) || n < 1 || n > list.length) {
+          return { text: list.length === 0 ? manualListText(list) : `Give the number from /report list, from 1 to ${list.length}, like /report remove 1.` }
+        }
+        const gone = list[n - 1]!
+        await saveManual($, list.filter((_, i) => i !== n - 1))
+
+        return { text: `Removed ${gone.hours} hours for ${gone.project} on ${gone.date}.` }
+      }
+
       if (first === 'backfill') {
         $.clock.after(0, () => {
           void backfill($).catch(() => $.ui.toast(BACKFILL_FAILED))
@@ -519,7 +593,7 @@ export const register: Register = on => {
 
       const tab = TABS.find(one => one === first)
       if (first !== '' && tab === undefined) {
-        return { text: 'Try /report, /report week, /report month, /report year, /report settings or /report backfill.' }
+        return { text: 'Try /report, /report week, /report month, /report year, /report settings, /report add, /report list or /report backfill.' }
       }
       if (tab !== undefined) await $.state.set(TAB, tab)
       void openReport($).catch(() => undefined)
@@ -557,12 +631,13 @@ export const register: Register = on => {
     return result
   }).catch(($, e, next) => next(e))
 
-  on('turn.start', ($, e, next) => {
+  on('turn.start', async ($, e, next) => {
     // The prompt the turn starts with, else the oldest typed while idle.
     const match = pending.find(one => one.text === e.text) ?? pending.find(one => one.turnId === undefined)
     if (match !== undefined) {
       pending = pending.filter(one => one !== match)
-      current = { turnId: e.turnId, uses: [] }
+      // A lost folder costs only the project, never the count.
+      current = { turnId: e.turnId, uses: [], cwd: await $.session.cwd().catch(() => '') }
     } else {
       current = null
     }
@@ -573,7 +648,8 @@ export const register: Register = on => {
   // Helper agents' tool calls count toward the request that started them.
   on('tool.call', ($, e, next) => {
     if (current !== null && current.uses.length < 300) {
-      current.uses.push({ tool: String(e.tool), paths: pathsOf(e as unknown as Record<string, unknown>) })
+      const input = e as unknown as Record<string, unknown>
+      current.uses.push({ tool: String(e.tool), paths: pathsOf(input), lines: writtenLines(input) })
     }
 
     return next(e)
@@ -586,7 +662,8 @@ export const register: Register = on => {
       if (e.reason === 'answer') {
         try {
           const model = modelName(e.usage?.model ?? (await $.session.model()))
-          await record($, kindOf(task.uses), model)
+          const kind = kindOf(task.uses)
+          await record($, kind, model, projectOfTask(task.cwd, task.uses, home), kind === 'building' ? taskLines(task.uses) : 0)
         } catch {
           // a lost count is better than a stuck turn
         }
@@ -624,10 +701,13 @@ export const register: Register = on => {
     const tab = await getTab($)
     const days = await getDays($)
     const settings = await getSettings($)
+    const manual = await getManual($)
     const today = await todayOf($)
 
     const { name, dates } = titleOf(tab, today)
-    const totals = sumDays(days, daysOf(tab, today))
+    const totals = sumDays(days, daysOf(tab, today), manual)
+    const isEmpty = totals.tasks === 0 && totals.manualMinutes === 0
+    const footnote = `Estimates: minutes saved per task, building software at ${settings.buildRate} lines of code an hour, at $${settings.rate} an hour.`
     const bars = barsOf(tab, days, today)
     const hasChart = bars.some(bar => bar.value > 0)
 
@@ -664,16 +744,18 @@ export const register: Register = on => {
             ))}
           </Box>
           {picture('header', headerSvg(px, name, dates))}
-          {totals.tasks === 0 ? (
+          {isEmpty ? (
             <Box marginTop={1}>
               <Text color={MUTED}>{emptyText(tab)}</Text>
             </Box>
           ) : (
             <Box flexDirection="column">
               {picture('tiles', tilesSvg(px, totals, settings))}
-              <Text color={MUTED}>{`Estimates: minutes saved per task at $${settings.rate} an hour.`}</Text>
+              <Text color={MUTED}>{footnote}</Text>
               {picture('kinds', barRowsSvg(px, 'Where the time went · est. hours', kindRows(totals, settings, KIND_COLOR)))}
-              {picture('models', barRowsSvg(px, 'Who did the work', models))}
+              {projectRows(totals, settings).length > 0 &&
+                picture('projects', barRowsSvg(px, 'By project · est. hours', projectBarRows(totals, settings, MODEL_COLORS)))}
+              {models.length > 0 && picture('models', barRowsSvg(px, 'Who did the work', models))}
             </Box>
           )}
           {hasChart && picture('chart', chartSvg(px, tab, CHART_HEADING[tab], bars, first))}
@@ -695,7 +777,7 @@ export const register: Register = on => {
       <Box flexDirection="column" width={width}>
         {drawTabs($, kit, width, tab)}
         {drawTitle(kit, width, name, dates)}
-        {totals.tasks === 0 ? (
+        {isEmpty ? (
           <Box flexDirection="column" marginTop={1} width={width}>
             {wrap(emptyText(tab), width).map(line => (
               <Text color={MUTED}>{line}</Text>
@@ -704,11 +786,12 @@ export const register: Register = on => {
         ) : (
           <Box flexDirection="column" width={width}>
             {drawTiles(kit, width, totals, settings)}
-            {wrap(`Estimates: minutes saved per task at $${settings.rate} an hour.`, width).map(line => (
+            {wrap(footnote, width).map(line => (
               <Text color={MUTED}>{line}</Text>
             ))}
             {drawKinds(kit, width, totals, settings)}
-            {drawModels(kit, width, totals)}
+            {drawProjects(kit, width, totals, settings)}
+            {Object.keys(totals.models).length > 0 && drawModels(kit, width, totals)}
           </Box>
         )}
         {hasChart && drawChart(kit, width, tab, bars, today)}
