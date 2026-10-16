@@ -341,13 +341,26 @@ const act = (work: () => Promise<unknown>) => () => {
   void work().catch(() => undefined)
 }
 
-// Opens the pane; when no surface places it, closes it again and puts the
-// person's words back in the prompt box. Resolves whether it was placed.
+// Opens the pane. On a terminal too narrow for it, closes it again and puts
+// the person's words back in the prompt box. Any other reason it waits
+// undrawn (no surface attached yet, one that places nothing) keeps it open,
+// since a surface that attaches later draws it; the reason goes in the
+// transcript so a pane that never shows says why. Resolves whether the flow
+// should go on.
 const openPane = async ($: D, restore: string): Promise<boolean> => {
-  const opened = await $.ui.open({ id: PANE, title: TITLE, focus: true, rows: 32 })
+  let opened: Awaited<ReturnType<D['ui']['open']>>
+  try {
+    opened = await $.ui.open({ id: PANE, title: TITLE, focus: true, rows: 32 })
+  } catch (error) {
+    $.ui.log(`Prompt Upgrade could not open its pane: ${error instanceof Error ? error.message : String(error)}`)
+    throw error
+  }
   if (opened.isPlaced) return true
+  $.ui.log(`Prompt Upgrade pane is waiting: ${opened.reason}`)
+  if (!/column/i.test(opened.reason)) return true
   await closePane($)
   if (restore.trim() !== '') await $.prompt.fill({ text: restore, mode: 'replace' })
+  $.ui.toast(NARROW)
 
   return false
 }
@@ -921,7 +934,7 @@ export const register: Register = on => {
 
       const flow = await startFlow($, args)
       void openPane($, args)
-        .then(isPlaced => (isPlaced ? askQuestions($, flow.id, flow.runId) : $.ui.toast(NARROW)))
+        .then(goOn => (goOn ? askQuestions($, flow.id, flow.runId) : undefined))
         .catch(() => undefined)
 
       return { text: 'Upgrading your prompt in the pane. Nothing runs until you press Run.' }

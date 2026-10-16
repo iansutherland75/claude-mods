@@ -27,6 +27,7 @@ type Rig = {
   closed: string[]
   fills: string[]
   toasts: string[]
+  logs: string[]
   submits: PromptSubmitInput[]
   models: ModelCompleteInput[]
 }
@@ -36,6 +37,7 @@ const rig = (
   on: On,
   options: {
     isPlaced?: boolean
+    reason?: string
     model?: (e: ModelCompleteInput) => ModelCompleteResult | Promise<ModelCompleteResult>
   } = {},
 ): Rig => {
@@ -45,6 +47,7 @@ const rig = (
     closed: [],
     fills: [],
     toasts: [],
+    logs: [],
     submits: [],
     models: [],
   }
@@ -54,10 +57,17 @@ const rig = (
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('ui.open', ($, e) => {
     r.opened.push(e.id)
-    if (options.isPlaced === false) return { value: { isPlaced: false, reason: 'too narrow' } }
+    if (options.isPlaced === false) {
+      return { value: { isPlaced: false, reason: options.reason ?? 'under the 110-column floor at 80 columns' } }
+    }
     panes.add(e.id)
 
     return { value: { isPlaced: true } }
+  })
+  on('ui.log', ($, e) => {
+    r.logs.push(e.text)
+
+    return { value: undefined }
   })
   on('ui.close', ($, e) => {
     r.closed.push(e.id)
@@ -338,6 +348,18 @@ test('a pane that cannot be placed puts the words back and says so', async ($, o
   expect(r.toasts).toHaveLength(1)
   expect(r.toasts[0]).toContain('wider window')
   expect(r.models).toHaveLength(0)
+})
+
+test('a pane waiting for a surface stays open, says why, and the flow goes on', async ($, on) => {
+  const r = rig(on, { isPlaced: false, reason: 'no-surface: none is attached' })
+  await start($)
+  await better($, ROUGH)
+  await settle(r)
+  expect(r.closed).toHaveLength(0)
+  expect(r.fills).toHaveLength(0)
+  expect(r.toasts).toHaveLength(0)
+  expect(r.logs.some(line => line.includes('no-surface'))).toBe(true)
+  expect(r.models.length).toBeGreaterThan(0)
 })
 
 test('a reload mid-step makes the pending call again', async ($, on) => {
