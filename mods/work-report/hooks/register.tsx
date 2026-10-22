@@ -143,21 +143,43 @@ const openReport = async ($: D) => {
 
 const BACKFILL_FAILED = 'Work Report could not read your session history. Nothing was changed.'
 
+// Windows keeps the home folder in USERPROFILE; HOME is the Mac and Linux one.
+const homeFolder = async ($: D) => (await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME'))
+
+// Python by the names each system gives it. A name that is not installed
+// rejects; the Windows Store stub exits 9009. Either way, try the next.
+const pythons = (home: string | undefined): readonly (readonly string[])[] =>
+  home !== undefined && /^[A-Za-z]:/.test(home)
+    ? [['py', '-3'], ['python'], ['python3']]
+    : [['/usr/bin/python3'], ['python3'], ['python']]
+const NO_INTERPRETER = new Set([9009, 126, 127])
+
 // Fills in past days from this machine's session transcripts. Read-only on the
 // transcripts; each day it finds replaces that day's record, so running it
 // again never counts a request twice.
 const backfill = async ($: D) => {
-  const home = await $.env.get('HOME')
-  const config = (await $.env.get('CLAUDE_CONFIG_DIR')) ?? (home === undefined ? undefined : `${home}/.claude`)
+  const home = await homeFolder($)
+  const folder = home !== undefined && home.includes('\\') ? '\\' : '/'
+  const config = (await $.env.get('CLAUDE_CONFIG_DIR')) ?? (home === undefined ? undefined : `${home}${folder}.claude`)
   if (config === undefined) {
     $.ui.toast(BACKFILL_FAILED)
 
     return
   }
-  const run = await $.process.run(['/usr/bin/python3', '-I', `${$.plugin.root}/scripts/history.py`, `${config}/projects`], {
-    timeoutMs: 600_000,
-  })
-  if (run.exitCode !== 0 || run.isStdoutTruncated) {
+  const script = `${$.plugin.root}/scripts/history.py`
+  const projects = `${config}${config.includes('\\') ? '\\' : '/'}projects`
+  let run: Awaited<ReturnType<D['process']['run']>> | undefined
+  for (const python of pythons(home)) {
+    try {
+      const tried = await $.process.run([...python, '-I', script, projects], { timeoutMs: 600_000 })
+      if (NO_INTERPRETER.has(tried.exitCode)) continue
+      run = tried
+      break
+    } catch {
+      // this name is not installed
+    }
+  }
+  if (run === undefined || run.exitCode !== 0 || run.isStdoutTruncated) {
     $.ui.toast(BACKFILL_FAILED)
 
     return
@@ -531,7 +553,7 @@ export const register: Register = on => {
       // registration refused; counting still works
     }
     try {
-      home = (await $.env.get('HOME').catch(() => undefined)) ?? ''
+      home = (await homeFolder($).catch(() => undefined)) ?? ''
       await loadSettings($)
       await loadManual($)
       await loadDays($)

@@ -617,6 +617,27 @@ test('/report backfill answers at once, reads in the background, and running it 
   expect(r.toasts.at(-1)).toBe('Work Report filled in 3 tasks from your session history, Jul 14 to Oct 13.')
 })
 
+test('/report backfill on Windows reads USERPROFILE and falls through to the next Python', async ($, on) => {
+  const r = rig(on, {})
+  const runs: string[][] = []
+  on('env.get', ($, e) => ({ value: e.name === 'USERPROFILE' ? 'C:\\Users\\stefan' : undefined }))
+  on('process.run', ($, e) => {
+    runs.push([...e.argv])
+    // py is missing (the Store stub's exit code), python works.
+    if (e.argv[0] === 'py') return { value: { exitCode: 9009, stdout: '', stderr: 'Python was not found', isStdoutTruncated: false, isStderrTruncated: false } }
+
+    return { value: { exitCode: 0, stdout: JSON.stringify(PAST), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  await start($)
+  await report($, 'backfill')
+  await r.clock.advance(10)
+  await r.clock.settle()
+  expect(runs.map(argv => argv[0])).toEqual(['py', 'python'])
+  expect(runs[1]?.[1]).toBe('-I')
+  expect(runs[1]?.[3]).toBe('C:\\Users\\stefan\\.claude\\projects')
+  expect(r.toasts.at(-1)).toBe('Work Report filled in 3 tasks from your session history, Jul 14 to Oct 13.')
+})
+
 test('a failed history read changes nothing and says so', async ($, on) => {
   const r = rig(on, { 'day:2026-10-13': day({ other: 9 }) })
   on('env.get', ($, e) => ({ value: e.name === 'HOME' ? '/Users/ian' : undefined }))
@@ -678,6 +699,20 @@ describe('building software', () => {
     expect(projectOfTask('/Volumes/Ext1/dev', [use('Write', ['/Volumes/Ext1/dev/onboarding-portal/src/a.ts'], 5)], home)).toBe('onboarding-portal')
     expect(projectOfTask('/Volumes/Ext1/dev', [use('Write', ['/Users/ian/.claude/dev-mods/s1/kit/hooks/a.tsx'], 5)], home)).toBe('claude-mods')
     expect(projectOfTask('/Volumes/Ext1/dev/nnpbc project', [use('Write', ['/private/tmp/x/scratch.sh'], 5)], home)).toBe('nnpbc project')
+  })
+
+  test('projects on Windows paths follow the same rules', () => {
+    const home = 'C:\\Users\\stefan'
+    expect(projectOf('C:\\Users\\stefan\\claude-mods\\mods\\x', home)).toBe('claude-mods')
+    expect(projectOf('c:\\users\\stefan\\claude-mods', home)).toBe('claude-mods')
+    expect(projectOf('C:\\Users\\stefan', home)).toBe('home folder')
+    expect(projectOf('D:\\dev\\qbr-builder\\app', home)).toBe('qbr-builder')
+    expect(projectOf('D:\\dev', home)).toBe('dev workspace')
+    expect(projectOf('D:\\3 - remotion\\Scene', home)).toBe('3 - remotion')
+    expect(projectOf('C:\\Users\\stefan\\Documents', '')).toBe('Documents')
+    expect(projectOfTask('D:\\dev', [use('Write', ['D:\\dev\\onboarding-portal\\src\\a.ts'], 5)], home)).toBe('onboarding-portal')
+    expect(projectOfTask('D:\\dev\\nnpbc', [use('Write', ['C:\\Users\\stefan\\AppData\\Local\\Temp\\x.sh'], 5)], home)).toBe('nnpbc')
+    expect(projectOfTask('D:\\dev', [use('Write', ['C:\\Users\\stefan\\.claude\\dev-mods\\s1\\kit\\a.tsx'], 5)], home)).toBe('claude-mods')
   })
 
   test('/report add takes a project, hours and an optional date', () => {

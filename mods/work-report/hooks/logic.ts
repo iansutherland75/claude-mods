@@ -60,7 +60,7 @@ const WRITES = /^(Write|Edit|MultiEdit|NotebookEdit)$|create|write|save|export|u
 const FILE_WRITES = /^(Write|Edit|MultiEdit|NotebookEdit)$/
 export const CODE_FILE = /\.(tsx?|jsx?|mjs|cjs|mts|cts|py|rb|go|rs|java|kt|swift|cs|php|sh|zsh|bash|ps1|psm1|sql|html?|css|scss|less|vue|svelte|json|jsonc|ya?ml|toml|ini|ipynb)$/i
 const BUILD_COMMAND =
-  /\b(npm|npx|pnpm|yarn|bun|node|deno|wrangler|pytest|vitest|jest|tsc|docker|az|terraform|pip3?|uv|cargo|go (build|test|run)|git (commit|push)|gh (pr|repo|release)|claude plugin|python3? [\w./-]+\.py)\b/
+  /\b(npm|npx|pnpm|yarn|bun|node|deno|wrangler|pytest|vitest|jest|tsc|docker|az|terraform|pip3?|uv|cargo|go (build|test|run)|git (commit|push)|gh (pr|repo|release)|claude plugin|(?:python3?|py) [\w./\\:-]+\.py)\b/
 // Remotion projects are video production, whatever the file type.
 const REMOTION_PATH = /remotion/i
 
@@ -142,16 +142,40 @@ export const taskLines = (uses: readonly ToolUse[]): number => {
   return [...whole.values(), ...edited.values()].reduce((n, lines) => n + lines, 0)
 }
 
+// Windows paths arrive as C:\Users\name\... ; every rule below reads them
+// with forward slashes.
+const slashed = (path: string) => path.replace(/\\/g, '/')
+const WIN_DRIVE = /^[A-Za-z]:(?:\/|$)/
+
+export const isAbsolutePath = (path: string) => slashed(path).startsWith('/') || WIN_DRIVE.test(slashed(path))
+
+// A folder on a Windows drive: under home, the dev root at the drive's top
+// (D:\dev\<repo>), another top folder, or Users\<name>\<folder>.
+const windowsProject = (path: string, base: string): string => {
+  const low = path.toLowerCase()
+  const home = base.toLowerCase()
+  if (home !== '' && low === home) return 'home folder'
+  if (home !== '' && low.startsWith(`${home}/`)) return path.slice(base.length + 1).split('/')[0]!
+  const dev = /^[A-Za-z]:\/dev(?:\/([^/]+))?/i.exec(path)
+  if (dev) return dev[1] ?? 'dev workspace'
+  const user = /^[A-Za-z]:\/Users\/[^/]+\/([^/]+)/i.exec(path)
+  if (user) return user[1]!
+  const top = /^[A-Za-z]:\/([^/]+)/.exec(path)
+
+  return top ? top[1]! : 'unknown'
+}
+
 // The project a session works in, named by its folder: the repo under a dev
 // root (/Volumes/<drive>/dev/<repo>), a top folder on another drive, or the
-// first folder under home.
+// first folder under home. Windows paths follow the same rules.
 export const projectOf = (cwd: string, home = ''): string => {
-  const path = cwd.replace(/\/+$/, '')
+  const path = slashed(cwd).replace(/\/+$/, '')
+  const base = slashed(home).replace(/\/+$/, '')
+  if (WIN_DRIVE.test(path)) return windowsProject(path, base)
   const dev = /^\/Volumes\/[^/]+\/dev(?:\/([^/]+))?/.exec(path)
   if (dev) return dev[1] ?? 'dev workspace'
   const drive = /^\/Volumes\/[^/]+\/([^/]+)/.exec(path)
   if (drive) return drive[1]!
-  const base = home.replace(/\/+$/, '')
   if (base !== '' && path === base) return 'home folder'
   if (base !== '' && path.startsWith(`${base}/`)) return path.slice(base.length + 1).split('/')[0]!
 
@@ -165,15 +189,16 @@ export const projectOfTask = (cwd: string, uses: readonly ToolUse[], home = ''):
   const tally = new Map<string, number>()
   for (const use of uses) {
     if (!FILE_WRITES.test(use.tool)) continue
-    for (const path of use.paths) {
-      if (!path.startsWith('/')) continue
+    for (const written of use.paths) {
+      if (!isAbsolutePath(written)) continue
+      const path = slashed(written)
       // Mods under construction belong to claude-mods; scratch files, temp
       // folders and Claude's own notes and settings belong to no project.
       if (/\/\.claude\/dev-mods\//.test(path)) {
         tally.set('claude-mods', (tally.get('claude-mods') ?? 0) + 1)
         continue
       }
-      if (/^\/(private|tmp|var)\/|\/Library\/|\/\.claude\//.test(path)) continue
+      if (/^\/(private|tmp|var)\/|\/Library\/|\/\.claude\//.test(path) || /^[A-Za-z]:\/(Windows|Temp|tmp)\/|\/AppData\//i.test(path)) continue
       const name = projectOf(path.replace(/\/[^/]*$/, ''), home)
       tally.set(name, (tally.get(name) ?? 0) + 1)
     }
