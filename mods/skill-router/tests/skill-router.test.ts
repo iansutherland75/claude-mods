@@ -2,22 +2,30 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
+import { CONDUCTOR } from '../hooks/conductor'
 import {
   LOG_LIMIT,
   MODEL_IDS,
+  REVIEWER,
+  REVIEW_ASK,
+  agentJevOptions,
   appendLog,
   decide,
+  decideAgent,
   isPinned,
   jevOptions,
   jevRequest,
   logLine,
   parseJev,
+  stopDecision,
   summary,
+  verdictOf,
 } from '../hooks/logic'
-import type { LogEntry } from '../hooks/logic'
+import type { LogEntry, Spawn, StopFacts } from '../hooks/logic'
 
 const OPUS = 'claude-opus-5-5'
 const SONNET = 'claude-sonnet-5-5'
+const FABLE = 'claude-fable-5-1'
 
 // The live answer captured 2026-10-21, with the pick swapped per test.
 const jevText = (choice: string, probability: number) =>
@@ -82,16 +90,88 @@ describe('logic', () => {
     expect(logLine(entry)).toContain('opus → haiku')
     expect(summary([entry])).toContain('1 pinned')
   })
+
+  test('agents: skips, the reviewer pin, an explicit model held down, Jev', () => {
+    const spawn = (over: Partial<Spawn> = {}): Spawn => ({ subagentType: 'Explore', fork: false, ...over })
+    const sure = { choice: 'haiku' as const, probability: 0.9, cost: 0 }
+
+    expect(decideAgent(spawn({ fork: true }), OPUS, sure)).toMatchObject({ source: 'kept', model: null })
+    expect(decideAgent(spawn({ resume: { agentId: 'a' } }), OPUS)).toMatchObject({ source: 'kept', model: null })
+    expect(decideAgent(spawn({ workflow: { runId: 'wf_1' } }), OPUS)).toMatchObject({ model: null })
+    expect(decideAgent(spawn({ subagentType: 'claude-code-guide' }), OPUS)).toMatchObject({ model: null })
+    expect(decideAgent(spawn({ subagentType: REVIEWER }), SONNET)).toEqual({ source: 'pin', pick: 'fable', model: 'fable' })
+    expect(decideAgent(spawn({ model: 'opus' }), SONNET)).toMatchObject({ source: 'explicit', pick: 'sonnet', model: SONNET })
+    expect(decideAgent(spawn({ model: 'haiku' }), SONNET)).toMatchObject({ source: 'explicit', pick: 'haiku', model: null })
+    expect(decideAgent(spawn(), OPUS, sure)).toMatchObject({ source: 'jev', pick: 'haiku', model: MODEL_IDS.haiku })
+    expect(decideAgent(spawn(), OPUS, { ...sure, choice: 'opus' })).toMatchObject({ model: MODEL_IDS.opus })
+    expect(decideAgent(spawn(), OPUS, { ...sure, probability: 0.3 })).toMatchObject({ source: 'kept', model: null })
+    expect(decideAgent(spawn(), OPUS, null)).toMatchObject({ source: 'kept', model: null })
+    expect(decideAgent(spawn(), 'claude-haiku-5-5')).toMatchObject({ source: 'kept', model: null })
+  })
+
+  test('agents: Jev is offered the session tier and below; under Fable, all three', () => {
+    const spawn: Spawn = { subagentType: 'Explore', fork: false }
+    expect(agentJevOptions(spawn, SONNET)).toEqual(['haiku', 'sonnet'])
+    expect(agentJevOptions(spawn, FABLE)).toEqual(['haiku', 'sonnet', 'opus'])
+    expect(agentJevOptions(spawn, 'claude-haiku-5-5')).toBe(null)
+    expect(agentJevOptions({ ...spawn, model: 'sonnet' }, OPUS)).toBe(null)
+    expect(agentJevOptions({ ...spawn, subagentType: REVIEWER }, OPUS)).toBe(null)
+    expect(agentJevOptions({ ...spawn, fork: true }, OPUS)).toBe(null)
+  })
+
+  test('the review gate', () => {
+    const facts = (over: Partial<StopFacts> = {}): StopFacts => ({
+      isReviewOn: true,
+      isStopHookActive: false,
+      backgroundTasks: 0,
+      isTouched: true,
+      isReviewed: false,
+      ...over,
+    })
+    expect(stopDecision(facts())).toEqual({ isBlocked: true })
+    expect(stopDecision(facts({ isReviewOn: false }))).toEqual({ isBlocked: false })
+    expect(stopDecision(facts({ isTouched: false }))).toEqual({ isBlocked: false })
+    expect(stopDecision(facts({ isReviewed: true }))).toEqual({ isBlocked: false })
+    expect(stopDecision(facts({ isStopHookActive: true }))).toEqual({ isBlocked: false, note: 'review skipped' })
+    expect(stopDecision(facts({ backgroundTasks: 2 }))).toMatchObject({ isBlocked: false })
+  })
+
+  test('verdicts and 0.1 log entries', () => {
+    expect(verdictOf('PASS\n- Did it do what Ian asked? Yes.')).toBe('PASS')
+    expect(verdictOf('  FIX\n- foo.ts:3 is wrong')).toBe('FIX')
+    expect(verdictOf('**PASS** (no fixes needed)')).toBe('PASS')
+    expect(verdictOf('Looks fine')).toBe(undefined)
+    expect(verdictOf('PASSING')).toBe(undefined)
+
+    const old: LogEntry = { at: 0, skill: 'docket', session: OPUS, source: 'pin', pick: 'haiku', switched: true }
+    const agent: LogEntry = { ...old, kind: 'agent', skill: 'Explore', source: 'jev', pick: 'haiku' }
+    const review: LogEntry = { ...old, kind: 'review', skill: REVIEWER, pick: 'fable', verdict: 'FIX', tokensIn: 900 }
+    const text = summary([old, agent, review])
+    expect(text).toContain('1 skill picks: 1 pinned')
+    expect(text).toContain('1 agents: 1 by Jev')
+    expect(text).toContain('1 Fable reviews: 0 PASS, 1 FIX, 900 tokens in')
+    expect(logLine(review)).toContain('review final-review')
+    expect(logLine(review)).toContain('FIX')
+  })
 })
 
 // ---------------------------------------------------------------- the rig
 
-type Rig = { kept: Map<string, unknown>; models: string[]; fetches: number; session: string; jev: string; key?: string }
+type Rig = {
+  kept: Map<string, unknown>
+  models: string[]
+  spawned: (string | undefined)[]
+  fetches: number
+  session: string
+  jev: string
+  key?: string
+}
 
 const rig = (on: On, overrides: Partial<Rig> = {}): Rig => {
   const r: Rig = {
     kept: new Map(),
     models: [],
+    spawned: [],
     fetches: 0,
     session: OPUS,
     jev: jevText('sonnet', 0.8),
@@ -124,9 +204,35 @@ const rig = (on: On, overrides: Partial<Rig> = {}): Rig => {
 
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [] } as never
   })
+  on('agent.spawn', ($, e) => {
+    r.spawned.push(e.model)
+
+    return { model: e.model ?? e.parentModel, agentId: `agent-${r.spawned.length}` }
+  })
+  on('tool.call', () => ({ result: {} }) as never)
+  on('classic.Stop', () => ({}))
+  on('classic.SessionStart', () => ({}))
 
   return r
 }
+
+const spawn = ($: Engine, subagentType: string, extra: object = {}) =>
+  $.agent.spawn({
+    tool_use_id: 'tu1',
+    prompt: 'Find every place the router reads the Keychain.',
+    description: 'Find Keychain reads',
+    subagentType,
+    provider: { plugin: 'engine', tier: 'core' },
+    parentModel: OPUS,
+    background: false,
+    fork: false,
+    ...extra,
+  } as never)
+
+const edit = ($: Engine) =>
+  $.tool.call({ tool: 'Edit', file_path: '/tmp/x.md', old_string: 'a', new_string: 'b' } as never)
+
+const stop = ($: Engine, isActive = false) => $.classic.Stop({ stop_hook_active: isActive } as never)
 
 const start = ($: Engine) => $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true })
 
@@ -224,4 +330,79 @@ test('off means no routing and no log; the command turns it back on', async ($, 
   await step($, OPUS)
   expect(r.models).toEqual([OPUS, MODEL_IDS.haiku])
   expect((await command($, 'status')).text).toContain('OpenRouter key: found')
+})
+
+// ---------------------------------------------------------------- agents and review
+
+test('a subagent runs on the size Jev picks, and its line gets its tokens', async ($, on) => {
+  const r = rig(on, { jev: jevText('haiku', 0.9) })
+  await start($)
+  const started = await spawn($, 'Explore')
+  await $.turn.complete({
+    answer: 'Found 2.',
+    durationMs: 1500,
+    isAborted: false,
+    turnId: 't2',
+    reason: 'answer',
+    agentId: started.agentId,
+    usage: { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+  } as never)
+
+  expect(r.spawned).toEqual([MODEL_IDS.haiku])
+  const line = (r.kept.get('log') as LogEntry[])[0]
+  expect(line).toMatchObject({ kind: 'agent', skill: 'Explore', source: 'jev', pick: 'haiku', switched: true })
+  expect(line).toMatchObject({ agentId: 'agent-1', tokensIn: 100, tokensOut: 20, turnMs: 1500 })
+})
+
+test('the reviewer always runs on Fable; agent routing off leaves other agents alone', async ($, on) => {
+  const r = rig(on)
+  await start($)
+  expect((await command($, 'agents off')).text).toBe('Agent routing is off.')
+  await spawn($, 'Explore')
+  await spawn($, REVIEWER)
+  expect(r.spawned).toEqual([undefined, 'fable'])
+  expect(r.fetches).toBe(0)
+  expect((r.kept.get('log') as LogEntry[]).map(e => e.kind)).toEqual(['review'])
+})
+
+test('real work blocks the stop once until the reviewer runs', async ($, on) => {
+  const r = rig(on)
+  await start($)
+  await $.prompt.submit({ text: 'fix the typo', wait: false, origin: { kind: 'composer' } })
+  await edit($)
+  expect(await stop($)).toEqual({ block: REVIEW_ASK })
+
+  await spawn($, REVIEWER)
+  expect(await stop($, true)).toEqual({})
+
+  // Edits after the review: the model is already going on for a Stop hook,
+  // so no second review, and the skip is logged.
+  await edit($)
+  expect(await stop($, true)).toEqual({})
+  expect((r.kept.get('log') as LogEntry[]).at(-1)).toMatchObject({ kind: 'review', note: 'review skipped' })
+})
+
+test('no review for a question, with review off, or after a new prompt', async ($, on) => {
+  rig(on)
+  await start($)
+  await $.prompt.submit({ text: 'what does this do?', wait: false, origin: { kind: 'composer' } })
+  expect(await stop($)).toEqual({})
+
+  await command($, 'review off')
+  await edit($)
+  expect(await stop($)).toEqual({})
+  await command($, 'review on')
+
+  // A new prompt clears the last one's work.
+  await $.prompt.submit({ text: 'thanks', wait: false, origin: { kind: 'composer' } })
+  expect(await stop($)).toEqual({})
+})
+
+test('the conductor rules reach the main session, not a subagent', async ($, on) => {
+  rig(on)
+  await start($)
+  expect(await $.classic.SessionStart({ source: 'startup' } as never)).toEqual({ additionalContext: [CONDUCTOR] })
+  expect(await $.classic.SessionStart({ source: 'compact' } as never)).toEqual({ additionalContext: [CONDUCTOR] })
+  expect(await $.classic.SessionStart({ source: 'resume' } as never)).toEqual({})
+  expect(await $.classic.SessionStart({ source: 'startup', agent_id: 'a1' } as never)).toEqual({})
 })

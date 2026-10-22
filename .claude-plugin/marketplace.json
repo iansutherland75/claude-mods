@@ -18,7 +18,7 @@
     {
       "name": "skill-router",
       "source": "./mods/skill-router",
-      "description": "Runs each skill on the right size of model: simple fixed-step skills on Haiku, the rest picked by Jev through OpenRouter, never above the session model. Logs every pick with its time and cost."
+      "description": "Runs each skill and subagent on the right size of model, picked by Jev through OpenRouter and never above the session model. Gives each session conductor rules for handing work to subagents, and has a Fable agent review any turn that changed files before it ends. Logs every pick and review with its time and cost."
     }
   ]
 }
