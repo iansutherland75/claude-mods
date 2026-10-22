@@ -1,0 +1,8 @@
+{
+  "name": "skill-router",
+  "version": "0.1.0",
+  "description": "Runs each skill on the right size of model: simple fixed-step skills on Haiku, the rest picked by Jev through OpenRouter, never above the session model. Logs every pick with its time and cost.",
+  "author": {
+    "name": "Ian Sutherland"
+  }
+}

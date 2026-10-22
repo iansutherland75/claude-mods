@@ -6,6 +6,7 @@ Ian's Claude Code mods. The repo is a plugin marketplace called `ian-mods`, and 
 | --- | --- |
 | `prompt-upgrade` | `/better <prompt>` asks up to three quick questions, rewrites the prompt and shows the original and the rewrite side by side. Nothing runs until you press Run. `/better on` sends what you type to it first. |
 | `work-report` | `/report` opens a pane with the tasks Claude finished for you and an estimate of the hours saved and what that time is worth, for today, the last 7 days, the last 30 days and the year. `/report settings` shows and changes the minutes per task and the hourly rate. `/report backfill` fills in past days from this machine's session history (needs `/usr/bin/python3`). Building software is estimated from the lines of code written (`/report settings buildrate 25`), and a By project section shows hours per repo. `/report add "QBR builder" 160 2026-05-01` adds hours for older work (`/report list`, `/report remove 1`). Counts are kept per machine. |
+| `skill-router` | Runs each skill on the right size of model. Simple fixed-step skills (docket, schedule, loop, keybindings-help, consolidate-memory) always run on Haiku. For the rest, Jev (TypeSafe's decision model on OpenRouter) picks Haiku, Sonnet or Opus, never above the session model, and the session model comes back on your next prompt. Each pick is logged with Jev's time and cost and the turn's tokens. `/skill-router log`, `/skill-router off`, `/skill-router on`. Needs an OpenRouter key in the `OPENROUTER_API_KEY` environment variable or in the login Keychain (see below). |
 
 ## Set up a machine
 
@@ -25,6 +26,16 @@ claude plugin install prompt-upgrade@ian-mods --scope user
 
 ```bash
 claude plugin install work-report@ian-mods --scope user
+```
+
+```bash
+claude plugin install skill-router@ian-mods --scope user
+```
+
+skill-router reads its OpenRouter key from the login Keychain. Copy the key, then run this once per machine. It never shows the key:
+
+```bash
+security add-generic-password -U -a "$USER" -s OPENROUTER_API_KEY -w "$(pbpaste)"
 ```
 
 Run these with Claude Code 2.1.295 or newer. If `claude --version` shows an older build, run `brew upgrade claude-code` first.
