@@ -1,6 +1,6 @@
 {
   "name": "skill-router",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Runs each skill and subagent on the right size of model, picked by Jev through OpenRouter and never above the session model. Shows each running subagent in a band above the chat box, with its model by colour and a progress bar, and on an Agents pane with how Jev chose the model. Gives each session conductor rules for handing work to subagents, and has a Fable agent review any turn that changed files before it ends. Logs every pick and review with its time and cost.",
   "author": {
     "name": "Ian Sutherland"

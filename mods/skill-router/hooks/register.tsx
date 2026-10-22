@@ -107,7 +107,8 @@ const writeEntry = ($: D, entry: LogEntry) =>
 // ---------------------------------------------------------------- key
 
 // Environment first, then the login Keychain. Only a found key is cached, so
-// one added mid-session is picked up on the next skill.
+// one added mid-session is picked up on the next skill. A 401 or 403 from Jev
+// drops the cached key (see askJev).
 const readKey = async ($: D): Promise<string | null> => {
   if (apiKey) return apiKey
   const fromEnv = await $.env.get('OPENROUTER_API_KEY')
@@ -141,6 +142,8 @@ const askJev = async (
       body: JSON.stringify(request),
     })
     const ms = Math.round((await $.clock.now()) - started)
+    // A refused key is dropped, so a key rotated mid-session is read on the next call.
+    if (response.status === 401 || response.status === 403) apiKey = null
     if (!response.ok) return { answer: null, ms, note: `Jev HTTP ${response.status}` }
 
     return { answer: parseJev(response.text, options), ms }

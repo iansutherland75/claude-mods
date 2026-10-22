@@ -224,6 +224,8 @@ type Rig = {
   session: string
   jev: string
   key?: string
+  status: number
+  auths: string[]
 }
 
 const rig = (on: On, overrides: Partial<Rig> = {}): Rig => {
@@ -237,6 +239,8 @@ const rig = (on: On, overrides: Partial<Rig> = {}): Rig => {
     session: OPUS,
     jev: jevText('sonnet', 0.8),
     key: 'sk-or-test',
+    status: 200,
+    auths: [],
     ...overrides,
   }
   mock.clock(on, { now: 1_800_000_000_000 })
@@ -251,10 +255,11 @@ const rig = (on: On, overrides: Partial<Rig> = {}): Rig => {
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('env.get', () => ({ value: r.key }))
   on('process.run', () => ({ value: { exitCode: 44, stdout: '', stderr: 'not found' } }) as never)
-  on('http.fetch', () => {
+  on('http.fetch', ($, e) => {
     r.fetches++
+    r.auths.push((e as { init?: { headers?: Record<string, string> } }).init?.headers?.Authorization ?? '')
 
-    return { value: { status: 200, ok: true, headers: {}, text: r.jev } }
+    return { value: { status: r.status, ok: r.status === 200, headers: {}, text: r.jev } }
   })
   on('ui.status', () => ({ value: undefined }))
   on('ui.toast', () => ({ value: undefined }))
@@ -383,6 +388,23 @@ test('an unsure Jev pick or a missing key keeps the session model', async ($, on
   await skill($, 'youtube-script')
   await step($, OPUS)
   expect(r.models).toEqual([OPUS, OPUS])
+})
+
+test('a refused key is read again on the next call, so a rotated key works without a restart', async ($, on) => {
+  const r = rig(on, { status: 401 })
+  await start($)
+  await skill($, 'blog-post')
+  await step($, OPUS)
+  await finish($)
+  expect(r.models).toEqual([OPUS])
+  expect((r.kept.get('log') as LogEntry[])[0]).toMatchObject({ source: 'kept', note: 'Jev HTTP 401; Jev unavailable' })
+
+  r.key = 'sk-or-rotated'
+  r.status = 200
+  await skill($, 'blog-post')
+  await step($, OPUS)
+  expect(r.models).toEqual([OPUS, SONNET])
+  expect(r.auths.at(-1)).toBe('Bearer sk-or-rotated')
 })
 
 test('a subagent keeps its own model', async ($, on) => {
