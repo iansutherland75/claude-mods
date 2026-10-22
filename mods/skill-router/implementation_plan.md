@@ -144,5 +144,5 @@ The mod stays named skill-router, so both machines keep the install they have. A
 ## After the build
 
 - Push claude-mods. On Kermit: `claude plugin update skill-router@ian-mods`.
-- Gonzo: `git pull` in `~/claude-mods`, install the plugin, and add the OpenRouter key to its Keychain. Gonzo doesn't have 0.1 yet.
+- Gonzo: `git pull` in `~/claude-mods`. skill-router is already installed there, so nothing else is needed.
 - Add a dated entry to ClaudeCowork `memory.md` and update the skill-router line in the dev root `CLAUDE.md` project list if Ian wants it there.
