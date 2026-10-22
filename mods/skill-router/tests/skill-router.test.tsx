@@ -2,6 +2,8 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
+import type { AgentCard } from '../types'
+
 import { CONDUCTOR } from '../hooks/conductor'
 import {
   LOG_LIMIT,
@@ -10,13 +12,19 @@ import {
   REVIEW_ASK,
   agentJevOptions,
   appendLog,
+  colorOf,
   decide,
   decideAgent,
+  expectedTools,
   isPinned,
   jevOptions,
   jevRequest,
   logLine,
   parseJev,
+  progressOf,
+  routeText,
+  statusText,
+  toolLine,
   stopDecision,
   summary,
   verdictOf,
@@ -153,6 +161,55 @@ describe('logic', () => {
     expect(logLine(review)).toContain('review final-review')
     expect(logLine(review)).toContain('FIX')
   })
+
+  test('agents pane: colour, usual tool count, progress, and the lines on a card', () => {
+    expect(colorOf(MODEL_IDS.haiku)).toBe('#3DD68C')
+    expect(colorOf(FABLE)).toBe('#F2C46D')
+    expect(colorOf(null)).toBe('#7D8590')
+
+    const run = (n: number): LogEntry => ({
+      at: 0,
+      kind: 'agent',
+      skill: 'Explore',
+      session: OPUS,
+      source: 'jev',
+      pick: 'haiku',
+      switched: true,
+      toolCalls: n,
+    })
+    expect(expectedTools([], 'Explore')).toBe(15)
+    expect(expectedTools([run(10), run(20)], 'Explore')).toBe(15)
+    expect(expectedTools([run(10), run(20), run(30)], 'Explore')).toBe(20)
+    expect(expectedTools([run(10), run(20), run(30)], 'Plan')).toBe(15)
+
+    const card: AgentCard = {
+      id: 'card-1',
+      type: 'Explore',
+      task: 'Find Keychain reads',
+      stage: 'running',
+      model: MODEL_IDS.haiku,
+      source: 'jev',
+      offered: ['haiku', 'sonnet', 'opus'],
+      pick: 'haiku',
+      probability: 0.99,
+      jevMs: 374,
+      tools: 6,
+      lastTool: 'Grep Keychain',
+      expected: 12,
+      startedAt: 0,
+    }
+    expect(progressOf(card)).toBe(0.5)
+    expect(progressOf({ ...card, tools: 40 })).toBe(0.9)
+    expect(progressOf({ ...card, stage: 'done' })).toBe(1)
+    expect(routeText(card)).toBe('Jev picked haiku from haiku / sonnet / opus · p 0.99 · 374 ms')
+    expect(routeText({ ...card, source: undefined })).toBe('Agent routing off · runs on haiku')
+    expect(statusText(card)).toBe('6 tool calls · Grep Keychain')
+    expect(statusText({ ...card, stage: 'done', endedAt: 41_000, tokensIn: 23_400, tokensOut: 1_900 })).toBe(
+      'Done · 41 s · 6 tool calls · 23k in / 2k out',
+    )
+    expect(toolLine({ tool: 'Read', file_path: '/Users/x/hooks/logic.ts' })).toBe('Read logic.ts')
+    expect(toolLine({ tool: 'Grep', pattern: 'find-generic-password' })).toBe('Grep find-generic-password')
+  })
 })
 
 // ---------------------------------------------------------------- the rig
@@ -161,6 +218,8 @@ type Rig = {
   kept: Map<string, unknown>
   models: string[]
   spawned: (string | undefined)[]
+  opened: string[]
+  closed: string[]
   fetches: number
   session: string
   jev: string
@@ -172,6 +231,8 @@ const rig = (on: On, overrides: Partial<Rig> = {}): Rig => {
     kept: new Map(),
     models: [],
     spawned: [],
+    opened: [],
+    closed: [],
     fetches: 0,
     session: OPUS,
     jev: jevText('sonnet', 0.8),
@@ -196,6 +257,17 @@ const rig = (on: On, overrides: Partial<Rig> = {}): Rig => {
     return { value: { status: 200, ok: true, headers: {}, text: r.jev } }
   })
   on('ui.status', () => ({ value: undefined }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.open', ($, e) => {
+    r.opened.push(e.id)
+
+    return { value: { isPlaced: true } }
+  })
+  on('ui.close', ($, e) => {
+    r.closed.push(e.id)
+
+    return { value: undefined }
+  })
   on('prompt.submit', ($, e) => ({ text: e.text }))
   on('skill.prompt', ($, e) => ({ text: e.text }))
   on('turn.complete', ($, e) => ({ text: e.answer }) as never)
@@ -212,6 +284,11 @@ const rig = (on: On, overrides: Partial<Rig> = {}): Rig => {
   on('tool.call', () => ({ result: {} }) as never)
   on('classic.Stop', () => ({}))
   on('classic.SessionStart', () => ({}))
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+    const { Text } = $.ui.resolve(e)
+
+    return <Text>engine band</Text>
+  })
 
   return r
 }
@@ -405,4 +482,151 @@ test('the conductor rules reach the main session, not a subagent', async ($, on)
   expect(await $.classic.SessionStart({ source: 'compact' } as never)).toEqual({ additionalContext: [CONDUCTOR] })
   expect(await $.classic.SessionStart({ source: 'resume' } as never)).toEqual({})
   expect(await $.classic.SessionStart({ source: 'startup', agent_id: 'a1' } as never)).toEqual({})
+})
+
+// ---------------------------------------------------------------- agents pane
+
+const PANE_PROPS = { title: 'Agents', isFocused: false, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} }
+
+const mountPane = ($: Engine, surface: 'terminal' | 'desktop', columns: number) =>
+  $.ui.mount({
+    plugin: 'skill-router',
+    component: 'Pane',
+    requestId: 'agents',
+    surface,
+    props: { ...PANE_PROPS, bodyColumns: columns },
+  } as never)
+
+// The pane's text rows, as the terminal draws them, wide enough to read whole.
+const paneLines = async ($: Engine): Promise<string[]> => {
+  const ui = await mountPane($, 'terminal', 200)
+  const texts = (await ui.findAll({ type: 'Text' })).map(t => String(t.text))
+  await ui.unmount()
+
+  return texts
+}
+
+// The band above the prompt. A hook of the test's stands for the engine's own
+// band beneath the plugin, so a band the plugin leaves alone reads 'engine band'.
+const mountBand = ($: Engine, surface: 'terminal' | 'desktop') =>
+  $.ui.mount({
+    plugin: 'skill-router',
+    component: 'AbovePrompt',
+    surface,
+    props: { hasSurvey: false, isWorking: true, maxRows: 20, bodyColumns: 100, scroll: { offset: 0, bodyRows: 20 }, view: {} },
+  } as never)
+
+const bandTexts = async ($: Engine, surface: 'terminal' | 'desktop'): Promise<string[]> => {
+  const ui = await mountBand($, surface)
+  const texts = (await ui.findAll({ type: 'Text' })).map(t => String(t.text))
+  await ui.unmount()
+
+  return texts
+}
+
+const prompt = ($: Engine, text: string) => $.prompt.submit({ text, isMeta: false } as never)
+
+test('a spawn gets a card that follows the agent from Jev to done', async ($, on) => {
+  const r = rig(on, { jev: jevText('haiku', 0.97) })
+  await start($)
+  const started = await spawn($, 'Explore')
+  // The band is the default view: no pane opens by itself.
+  expect(r.opened).toEqual([])
+
+  let lines = await paneLines($)
+  expect(lines[0]).toBe('1 running')
+  expect(lines[1]).toBe('Explore · haiku · Find Keychain reads')
+  expect(lines[2]).toBe('Jev picked haiku from haiku / sonnet / opus · p 0.97 · 0 ms')
+  expect(lines[4]).toBe('Started')
+
+  await $.tool.call({ tool: 'Grep', pattern: 'Keychain', agentId: started.agentId } as never)
+  await $.tool.call({ tool: 'Read', file_path: '/a/b/register.tsx', agentId: started.agentId } as never)
+  // A loop no card holds (a compaction fork) changes nothing.
+  await $.tool.call({ tool: 'Read', file_path: '/a/c.ts', agentId: 'fork-x' } as never)
+  lines = await paneLines($)
+  expect(lines[4]).toBe('2 tool calls · Read register.tsx')
+
+  await $.turn.complete({
+    answer: 'Found 2.',
+    durationMs: 1500,
+    isAborted: false,
+    turnId: 't2',
+    reason: 'answer',
+    agentId: started.agentId,
+    usage: { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+  } as never)
+  lines = await paneLines($)
+  expect(lines[0]).toBe('1 finished')
+  expect(lines[4]).toBe('Done · 0 s · 2 tool calls · 100 in / 20 out')
+  expect((r.kept.get('log') as LogEntry[])[0]).toMatchObject({ toolCalls: 2 })
+
+  // A slash command leaves the finished card; a typed prompt clears it.
+  await $.prompt.submit({ text: '/skill-router pane', isMeta: false, command: { name: 'skill-router', args: 'pane' } } as never)
+  expect((await paneLines($))[0]).toBe('1 finished')
+  expect(r.closed).toEqual([])
+  await prompt($, 'next thing')
+  expect(await paneLines($)).toEqual(['No agents yet'])
+  expect(r.closed).toEqual(['agents'])
+})
+
+test('with agent routing off a spawn still gets a card; view off shows it nowhere until asked', async ($, on) => {
+  const r = rig(on)
+  await start($)
+  await command($, 'agents off')
+  expect((await command($, 'view off')).text).toContain('nowhere')
+  await spawn($, 'Explore')
+  const lines = await paneLines($)
+  expect(lines[1]).toBe('Explore · opus · Find Keychain reads')
+  expect(lines[2]).toBe('Agent routing off · runs on opus')
+  expect(r.opened).toEqual([])
+  expect(await bandTexts($, 'terminal')).toEqual(['engine band'])
+  expect((await command($, 'pane')).text).toBe('Agents pane opened.')
+  expect(r.opened).toEqual(['agents'])
+})
+
+test('the band shows one row an agent above the chat box, on every surface', async ($, on) => {
+  rig(on, { jev: jevText('haiku', 0.95) })
+  await start($)
+  expect(await bandTexts($, 'terminal')).toEqual(['engine band'])
+  const started = await spawn($, 'Explore')
+  await $.tool.call({ tool: 'Grep', pattern: 'Keychain', agentId: started.agentId } as never)
+
+  const rows = await bandTexts($, 'terminal')
+  expect(rows[0]).toBe('Agents · 1 running')
+  expect(rows[1]).toMatch(/^● Explore · haiku  █+░+  1 call · Grep Keychain$/)
+
+  const ui = await mountBand($, 'desktop')
+  const svg = (await ui.find({ type: 'Svg' })) as { props?: { alt?: unknown; source?: unknown } } | undefined
+  expect(String(svg?.props?.alt)).toBe('Agents: 1 running. Explore on haiku, 1 call · Grep Keychain.')
+  expect(String(svg?.props?.source)).toContain('#3DD68C')
+  await ui.unmount()
+})
+
+test('view pane opens the pane on a spawn and leaves the band to the engine', async ($, on) => {
+  const r = rig(on)
+  await start($)
+  expect((await command($, 'view pane')).text).toContain('beside the chat')
+  expect(r.kept.get('view')).toBe('pane')
+  await spawn($, 'Explore')
+  expect(r.opened).toEqual(['agents'])
+  expect(await bandTexts($, 'terminal')).toEqual(['engine band'])
+  expect((await command($, 'status')).text).toContain('agents view pane')
+})
+
+test('the pane draws a card on every surface', async ($, on) => {
+  rig(on, { jev: jevText('sonnet', 0.9) })
+  await start($)
+  await spawn($, 'Plan')
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await mountPane($, surface, 60)
+    expect((await ui.find({ type: 'Text', text: /1 running/ }))?.text).toBe('1 running')
+    if (surface === 'desktop') {
+      const svg = (await ui.find({ type: 'Svg' })) as { props?: { alt?: unknown; source?: unknown } } | undefined
+      expect(String(svg?.props?.alt)).toContain('Plan on sonnet')
+      expect(String(svg?.props?.source)).toContain('#58A6FF')
+    } else {
+      expect((await ui.find({ type: 'Text', text: /Jev picked sonnet/ }))?.text).toContain('p 0.90')
+    }
+    await ui.unmount()
+  }
 })

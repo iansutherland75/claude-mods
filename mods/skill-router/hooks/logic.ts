@@ -2,6 +2,8 @@
 // skill and agent decisions, the review gate, and the log. No `$` here, so the
 // tests run it directly.
 
+import type { AgentCard } from '../types'
+
 // ---------------------------------------------------------------- settings
 
 // Simple fixed-step skills, signed off by Ian 2026-10-21. Bare names: a synced
@@ -282,6 +284,8 @@ export type LogEntry = {
   turnMs?: number
   tokensIn?: number
   tokensOut?: number
+  // An agent's tool calls, for the Agents pane's progress estimate (0.3 on).
+  toolCalls?: number
 }
 
 export const appendLog = (list: readonly LogEntry[], entry: LogEntry): LogEntry[] => [...list, entry].slice(-LOG_LIMIT)
@@ -335,4 +339,108 @@ export const parseCount = (args: string, fallback: number): number => {
   const n = Number.parseInt(args, 10)
 
   return Number.isFinite(n) && n > 0 ? Math.min(n, LOG_LIMIT) : fallback
+}
+
+// ---------------------------------------------------------------- agents pane
+
+export const MODEL_COLOR: Record<AgentTier, string> = {
+  haiku: '#3DD68C',
+  sonnet: '#58A6FF',
+  opus: '#BC8CFF',
+  fable: '#F2C46D',
+}
+export const UNKNOWN_COLOR = '#7D8590'
+
+export const colorOf = (model: string | null): string => {
+  const tier = model ? agentTierOf(model) : null
+
+  return tier ? MODEL_COLOR[tier] : UNKNOWN_COLOR
+}
+
+export const modelLabel = (model: string | null): string => (model ? (agentTierOf(model) ?? model) : '…')
+
+// Tool calls a run usually takes, until the log has runs of that type.
+const FIRST_GUESS: Record<string, number> = { Explore: 15, Plan: 15, 'general-purpose': 20, [REVIEWER]: 12 }
+const GUESS = 15
+const HISTORY = 20
+
+// The average tool calls of the last runs of this agent type, or a first
+// guess while fewer than three are logged.
+export const expectedTools = (list: readonly LogEntry[], agentType: string): number => {
+  const runs = list.filter(e => e.skill === agentType && e.toolCalls !== undefined).slice(-HISTORY)
+  if (runs.length < 3) return FIRST_GUESS[agentType] ?? GUESS
+  const mean = runs.reduce((sum, e) => sum + (e.toolCalls ?? 0), 0) / runs.length
+
+  return Math.max(3, Math.round(mean))
+}
+
+// How full the bar is. An agent reports no percent done, so a running bar
+// fills by tool calls against the usual count and holds at 90% until it ends.
+export const progressOf = (card: AgentCard): number => {
+  if (card.stage === 'done') return 1
+  if (card.stage === 'routing') return 0.03
+  if (card.stage === 'denied') return 0
+
+  return Math.min(0.9, Math.max(0.05, card.tools / Math.max(1, card.expected)))
+}
+
+// The last tool, as a short line: the tool and what it was pointed at.
+export const toolLine = (e: { tool: string } & Record<string, unknown>): string => {
+  const target = ['pattern', 'file_path', 'path', 'command', 'url', 'query', 'description', 'skill']
+    .map(key => e[key])
+    .find(value => typeof value === 'string' && value.trim() !== '') as string | undefined
+  const short = target ? (target.includes('/') && !target.includes(' ') ? target.slice(target.lastIndexOf('/') + 1) : target) : ''
+
+  return clip(short ? `${e.tool} ${short.replace(/\s+/g, ' ')}` : e.tool, 60)
+}
+
+// How the model was chosen, in one line.
+export const routeText = (card: AgentCard): string => {
+  if (card.stage === 'routing') return 'Asking Jev which model to use…'
+  const model = modelLabel(card.model)
+  if (card.source === 'jev') {
+    const offered = card.offered?.length ? ` from ${card.offered.join(' / ')}` : ''
+    const sure = card.probability !== undefined ? ` · p ${card.probability.toFixed(2)}` : ''
+    const ms = card.jevMs !== undefined ? ` · ${card.jevMs} ms` : ''
+
+    return `Jev picked ${card.pick ?? model}${offered}${sure}${ms}`
+  }
+  if (card.source === 'pin') return `Pinned to ${model}`
+  if (card.source === 'explicit') return card.note ? `Named by Claude, ${card.note}` : `Named by Claude: ${model}`
+  if (card.source === 'kept') {
+    const why = card.note ?? 'session model'
+    const jevSaid = card.pick && card.note?.startsWith('Jev unsure') ? ` (leaned ${card.pick})` : ''
+
+    return `Kept ${model}: ${why}${jevSaid}`
+  }
+
+  return `Agent routing off · runs on ${model}`
+}
+
+const seconds = (ms: number): string => (ms < 60_000 ? `${Math.round(ms / 1000)} s` : `${Math.floor(ms / 60_000)} m ${Math.round((ms % 60_000) / 1000)} s`)
+
+const thousands = (n: number): string => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n))
+
+const calls = (n: number): string => `${n} tool call${n === 1 ? '' : 's'}`
+
+// What the agent is doing, or how it ended.
+export const statusText = (card: AgentCard): string => {
+  if (card.stage === 'routing') return 'Starting'
+  if (card.stage === 'denied') return `Refused: ${card.note ?? 'spawn denied'}`
+  if (card.stage === 'running') return card.lastTool ? `${calls(card.tools)} · ${card.lastTool}` : 'Started'
+  const parts = [card.stage === 'done' ? 'Done' : 'Stopped']
+  if (card.endedAt !== undefined) parts.push(seconds(card.endedAt - card.startedAt))
+  parts.push(calls(card.tools))
+  if (card.tokensIn !== undefined) parts.push(`${thousands(card.tokensIn)} in / ${thousands(card.tokensOut ?? 0)} out`)
+
+  return parts.join(' · ')
+}
+
+export const isLive = (card: AgentCard): boolean => card.stage === 'routing' || card.stage === 'running'
+
+export const paneHeading = (cards: readonly AgentCard[]): string => {
+  const live = cards.filter(isLive).length
+  const ended = cards.length - live
+
+  return [live ? `${live} running` : '', ended ? `${ended} finished` : ''].filter(Boolean).join(' · ') || 'No agents yet'
 }
